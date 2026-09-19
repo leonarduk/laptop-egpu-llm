@@ -1,0 +1,127 @@
+Real failure output from this build, for comparison against your own.
+Lenovo Legion 5 15IAX10 + Razer Core X V2 (USB4), RTX 5070 Laptop 8GB + RTX 5060 Ti 16GB.
+
+================================================================================
+1. THE DRIVER VERSION COLLISION
+================================================================================
+
+Get-CimInstance Win32_PnPSignedDriver -Filter "DeviceClass='DISPLAY'"
+
+  DeviceName    : NVIDIA GeForce RTX 5060 Ti
+  DriverVersion : 32.0.15.9186          -> 591.86
+  DriverDate    : 20/01/2026
+  InfName       : oem268.inf            (original: nv_dispig.inf, desktop)
+
+  DeviceName    : NVIDIA GeForce RTX 5070 Laptop GPU
+  DriverVersion : 32.0.16.1692          -> 616.92
+  DriverDate    : 09/04/2026
+  InfName       : oem277.inf            (original: nvlti.inf, notebook)
+
+Two packages, two versions, one nvlddmkm.sys. Only one GPU can work.
+
+
+================================================================================
+2. DEVICE STATES WHILE BROKEN
+================================================================================
+
+Hot-plugged, both cards present:
+
+  NVIDIA GeForce RTX 5060 Ti          Error   CM_PROB_NORMAL_CONFLICT   (Code 12)
+  Intel(R) Graphics                   OK      CM_PROB_NONE
+  NVIDIA GeForce RTX 5070 Laptop GPU  Error   CM_PROB_FAILED_ADD        (Code 31)
+
+  nvidia-smi: Failed to initialize NVML: Not Found
+
+After a cold boot with the enclosure attached, the failure swapped cards:
+
+  NVIDIA GeForce RTX 5060 Ti          OK      CM_PROB_NONE
+  NVIDIA GeForce RTX 5070 Laptop GPU  Error   CM_PROB_FAILED_ADD        (Code 31)
+
+  0, NVIDIA GeForce RTX 5060 Ti, 591.86, 16311 MiB, 00000000:06:00.0
+
+That swap is the tell: resource contention does not ping-pong between devices.
+
+
+================================================================================
+3. NVIDIA INSTALLER FAILING WITH A LIVE GPU  (C:\Windows\INF\setupapi.dev.log)
+================================================================================
+
+Running setup.exe -s -clean -noreboot with the eGPU connected:
+
+  inf:  Service 'nvlddmkm' still in use by 2 sources.
+  cpy:  Skipping isolated file 'nvlddmkm.sys'.
+  idb:  {Unpublish Driver Package: C:\Windows\System32\DriverStore\FileRepository\
+          nvlti.inf_amd64_c284234d5322c92e\nvlti.inf}
+  idb:  Unregistered driver package 'nvlti.inf_amd64_c284234d5322c92e' from 'oem277.inf'.
+
+It removed the working package FIRST, then failed to copy the replacement.
+Result: RTX 5070 dropped to Code 28, "drivers for this device are not installed".
+
+With the eGPU disconnected instead, the desktop installer refused to run at all:
+
+  installer exit code: -469762016   (0xE4000020)
+
+
+================================================================================
+4. WORKING STATE AFTER pnputil INSTALL
+================================================================================
+
+  pnputil /add-driver ...\Display.Driver\nvlti.inf    /install
+    Published Name: oem272.inf
+    Driver package installed on device: PCI\VEN_10DE&DEV_2D18&...
+    (elapsed 5m34s)
+
+  pnputil /add-driver ...\Display.Driver\nv_dispi.inf /install
+    Published Name: oem277.inf
+    Driver package installed on device: PCI\VEN_10DE&DEV_2D04&...
+    (elapsed 33s - and note it bound to the eGPU while it was DISCONNECTED)
+
+  pnputil /delete-driver oem268.inf /uninstall
+    Ignoring /force when used with /uninstall to delete driver package.
+    Driver package uninstalled.
+
+Final, after reconnecting and restarting:
+
+  index, name, driver_version, memory.total [MiB], pci.bus_id
+  0, NVIDIA GeForce RTX 5070 Laptop GPU, 616.92,  8151 MiB, 00000000:02:00.0
+  1, NVIDIA GeForce RTX 5060 Ti,         616.92, 16311 MiB, 00000000:06:00.0
+
+  NVIDIA GeForce RTX 5060 Ti          OK   CM_PROB_NONE   32.0.16.1692   oem277.inf
+  NVIDIA GeForce RTX 5070 Laptop GPU  OK   CM_PROB_NONE   32.0.16.1692   oem272.inf
+  Intel(R) Graphics                   OK   CM_PROB_NONE   32.0.101.6737  oem123.inf
+
+
+================================================================================
+5. ENCLOSURE NOT ON THE BUS  (wrong cable)
+================================================================================
+
+Plugging in produced ZERO device events. Not an error - nothing at all:
+
+  Get-WinEvent ... StartTime <marker>
+    DistributedCOM  10010
+    HttpService       114
+    (no PnP, no USB, no USB4 events)
+
+  USB4(TM) Host Router (Microsoft)        OK        <- laptop controller fine
+  USB4 Router (2.0), Razer - Core X V2    Unknown   <- enclosure not enumerated
+
+Cause: a USB-C cable carrying power and USB 2.0 only. Physically identical to a
+USB4 cable. With the correct cable the router went to OK immediately.
+
+
+================================================================================
+6. LM STUDIO / llama.cpp OUT OF MEMORY
+================================================================================
+
+  W common_fit_params: failed to fit params to free device memory:
+      n_gpu_layers already set by user to 999999, abort
+  E ggml_backend_cuda_buffer_type_alloc_buffer: allocating 5830.00 MiB on device 1:
+      cudaMalloc failed: out of memory
+  E alloc_tensor_range: failed to allocate CUDA1 buffer of size 6113198080
+  E llama_init_from_model: failed to initialize the context:
+      failed to allocate buffer for kv cache
+
+  srv load_model: initializing, n_slots = 4, n_ctx_slot = 262144, kv_unified = 'true'
+
+Note: "device 1" / "CUDA1" proves multi-GPU IS working. The failure is capacity,
+specifically the KV cache, amplified 4x by n_slots = 4.
