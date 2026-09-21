@@ -113,12 +113,18 @@ def _check(args) -> int:
 
     print("\nModels")
     verdicts = []
+    # Collected rather than returned on: a multi-role config with one model
+    # missing should say so once, with every other role's verdict alongside,
+    # instead of making you rerun to discover them one at a time.
+    #
+    # Only reachable for an explicit list or --env-file. A survey builds its
+    # list from `sizes` itself, so every name is pulled by construction.
+    unpulled: list[str] = []
     for name in models:
         if name not in sizes:
-            return _refuse(
-                f"'{name}' is not pulled, so its size is unknown (ollama pull {name}).",
-                CANNOT_ANSWER,
-            )
+            unpulled.append(name)
+            print(f"  {name:<40} not pulled - size unknown")
+            continue
         verdict = judge(name, sizes[name], budget, args.headroom)
         verdicts.append(verdict)
         state = "fits" if verdict.fits else f"TOO BIG by {verdict.short_gib:.2f} GB"
@@ -128,12 +134,21 @@ def _check(args) -> int:
         )
 
     too_big = [v for v in verdicts if not v.fits]
+    # "Will not fit" outranks "could not be sized" when both are true: both
+    # refuse and nothing loads either way, but a definite hazard is the more
+    # actionable thing to put in front of someone.
     if requested and too_big:
         names = ", ".join(v.model for v in too_big)
         return _refuse(
             f"{names} will not fit in {_gib(budget)}. "
             "Do not load it - this is the configuration that hangs the machine.",
             DOES_NOT_FIT,
+        )
+    if unpulled:
+        listed = "".join(f"\n  ollama pull {name}" for name in unpulled)
+        return _refuse(
+            f"{len(unpulled)} model(s) are not pulled, so their size is unknown:{listed}",
+            CANNOT_ANSWER,
         )
     if too_big:
         print(f"\n{len(too_big)} of {len(verdicts)} pulled models do not fit right now.")
@@ -228,9 +243,12 @@ def _stop(args) -> int:
         still = client.loaded_models()
         held = sum(m.size_vram_bytes for m in still)
         print(f"\n{_gib(held)} still held by {len(still)} resident model(s).")
-    except OllamaUnavailable:
+    except OllamaUnavailable as exc:
         # The unload succeeded; failing to re-read state is not a failure.
-        print("\nUnloaded (could not re-read resident state).")
+        # The cause is carried through because "could not re-read" reads the
+        # same whether the server died, refused the connection or returned a
+        # 500, and those want different responses from whoever sees it.
+        print(f"\nUnloaded (could not re-read resident state: {exc}).")
     return OK
 
 
@@ -257,9 +275,26 @@ def _bench(args) -> int:
                     f"prompt {run.prompt_tokens_per_second:.1f} tok/s, "
                     f"{run.total_seconds:.1f}s total"
                 )
-        live = [m for m in client.loaded_models() if m.name == model]
     except OllamaUnavailable as exc:
         return _refuse(str(exc), CANNOT_ANSWER)
+
+    # Deliberately outside the block above, for the reason _stop gives: the
+    # benchmark has already run and printed its timings, so a server that
+    # goes away before this follow-up read has cost us the offload figure,
+    # not the results. Returning CANNOT_ANSWER here would report a run that
+    # succeeded as a run that failed.
+    # None means the read failed; a list means it succeeded, and an empty one
+    # means the model genuinely is not resident. Collapsing those two into []
+    # made the missing offload line mean two different things, with the
+    # difference visible only as the presence of a warning further up.
+    try:
+        live: list | None = [m for m in client.loaded_models() if m.name == model]
+    except OllamaUnavailable as exc:
+        live = None
+        print(
+            "\nCould not re-read GPU offload afterwards; the timings above "
+            f"stand. ({exc})"
+        )
 
     if live:
         model_state = live[0]
@@ -270,6 +305,16 @@ def _bench(args) -> int:
         )
         if pct < 99:
             print("Part of this model is on CPU, which is what caps the rate above.")
+    elif live is not None:
+        # Read fine, model gone. Unusual right after a benchmark, but it
+        # happens with OLLAMA_KEEP_ALIVE=0 or when a concurrent load evicts
+        # it -- and saying so beats omitting the line and leaving the reader
+        # to wonder which of the two happened.
+        print(
+            f"\n{model} is no longer resident, so GPU offload could not be "
+            "read. A keep-alive of 0, or another model loaded since, will do "
+            "this; the timings above stand."
+        )
     if not embedding:
         print(
             "\nGeneration is memory-bandwidth-bound and prompt eval is compute-bound,\n"
@@ -281,10 +326,22 @@ def _bench(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ollama-tools",
-        description="Check a model fits in attached VRAM before anything loads it.",
+        description=(
+            "Check a model fits in attached VRAM before anything loads it. "
+            "Windows and Linux; requires an NVIDIA GPU with nvidia-smi on "
+            "PATH -- other GPUs exit 2 rather than guess at a VRAM figure."
+        ),
     )
     parser.add_argument("--endpoint", default="http://localhost:11434")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    def add_common(sub):
+        # Also on every subcommand, because `ollama-tools stop --all
+        # --endpoint X` is what people type and argparse would otherwise
+        # reject it as an unrecognised argument. SUPPRESS so an absent flag
+        # here leaves the top-level value alone instead of a subparser
+        # default silently clobbering it.
+        sub.add_argument("--endpoint", default=argparse.SUPPRESS)
 
     def add_fit_options(sub, with_model="optional"):
         if with_model == "optional":
@@ -297,19 +354,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     check = subparsers.add_parser("fit", help="does it fit? (checks only, loads nothing)")
     add_fit_options(check)
+    add_common(check)
     check.set_defaults(func=_check)
 
     start = subparsers.add_parser("start", help="load a model, only if it fits")
     add_fit_options(start, with_model="one")
     start.add_argument("--prompt", help="run one prompt instead of an interactive session")
+    add_common(start)
     start.set_defaults(func=_start)
 
     ps = subparsers.add_parser("ps", help="what is resident, and how much reached the GPU")
+    add_common(ps)
     ps.set_defaults(func=_ps)
 
     stop = subparsers.add_parser("stop", help="unload to reclaim VRAM; the server stays up")
     stop.add_argument("model", nargs="*")
     stop.add_argument("--all", action="store_true")
+    add_common(stop)
     stop.set_defaults(func=_stop)
 
     benchmark = subparsers.add_parser("bench", help="tok/s and GPU offload")
@@ -317,6 +378,7 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--prompt")
     benchmark.add_argument("--tokens", type=int, default=200)
     benchmark.add_argument("--repeat", type=int, default=1)
+    add_common(benchmark)
     benchmark.set_defaults(func=_bench)
     return parser
 

@@ -110,3 +110,65 @@ def test_models_to_check_dedupes_across_roles(monkeypatch):
         "TRIAGE_OLLAMA_MODEL": "gemma3:4b",
     }
     assert models_to_check(values) == ["qwen2.5-coder:7b", "gemma3:4b"]
+
+
+# --- parity with python-dotenv (issue #11) ---------------------------------
+# The runtime loads this file with python-dotenv, so anywhere the two
+# disagree about a value this module is predicting the wrong thing. Only a
+# differential test can hold that line; a hand-written expectation just
+# encodes whatever this parser happens to do today.
+
+PARITY_CASES = [
+    "PLAIN=value",
+    'DQUOTED="value"',
+    "SQUOTED='value'",
+    'DQUOTED_COMMENT="a" # trailing',
+    "SQUOTED_COMMENT='a' # trailing",
+    "UNQUOTED_COMMENT=plain # trailing",
+    "HASH_NO_SPACE=has#hash",
+    'PADDED="  keeps padding  "',
+    "TRAILING_WS=value    ",
+    "APOSTROPHE=it's",
+    'NESTED_QUOTES=\'say "hi"\'',
+    "EMPTY=",
+    "EXPORTED=exported",
+    "TARGET=local:localhost:11434:qwen2.5-coder:7b",
+    "EXPAND=${PARITY_SET}",
+    "EXPAND_SQUOTED='${PARITY_SET}'",
+    "EXPAND_MISSING=${PARITY_UNSET}",
+    "EXPAND_DEFAULT=${PARITY_UNSET:-fallback}",
+    "EXPAND_INLINE=pre-${PARITY_SET}-post",
+]
+
+
+def test_parsing_matches_python_dotenv(tmp_path, monkeypatch):
+    dotenv = pytest.importorskip(
+        "dotenv", reason="python-dotenv is a test-only dependency (pip install -e .[dev])"
+    )
+    monkeypatch.setenv("PARITY_SET", "from-env")
+    monkeypatch.delenv("PARITY_UNSET", raising=False)
+
+    path = tmp_path / ".env"
+    path.write_text("\n".join(PARITY_CASES) + "\n", encoding="utf-8")
+
+    assert read_env_file(path) == dict(dotenv.dotenv_values(path))
+
+
+def test_inline_comment_is_not_part_of_the_value(tmp_path):
+    """The bug issue #11 was actually about: the value kept ' # comment'."""
+    values = read_env_file(write(tmp_path, 'CODER_OLLAMA_MODEL="qwen2.5-coder:7b" # the safe one\n'))
+    assert values["CODER_OLLAMA_MODEL"] == "qwen2.5-coder:7b"
+
+
+def test_expansion_is_applied_so_a_placeholder_is_never_sized(tmp_path, monkeypatch):
+    """Issue #11 missed this one, and .env already uses ${...}. An
+    unexpanded '${HOST}' would be carried into a model name."""
+    monkeypatch.setenv("PARITY_MODEL", "qwen2.5-coder:7b")
+    values = read_env_file(write(tmp_path, "CODER_OLLAMA_MODEL=${PARITY_MODEL}\n"))
+    assert values["CODER_OLLAMA_MODEL"] == "qwen2.5-coder:7b"
+
+
+def test_nested_quotes_were_never_broken(tmp_path):
+    """Issue #11's headline example claimed this produced 'say "hi'. It did
+    not, before or after the fix - kept as a regression guard."""
+    assert read_env_file(write(tmp_path, "A='say \"hi\"'\n"))["A"] == 'say "hi"'

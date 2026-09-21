@@ -8,6 +8,13 @@ gives ~15.9 GB, not 23.8 GB (see docs/lmstudio-multi-gpu.md).
 
 Guessing high is what hangs the machine, so the default strategy takes
 whichever of those two ceilings is lower.
+
+**NVIDIA only.** Detection is ``nvidia-smi``, so Apple Silicon, AMD and
+Intel GPUs raise :class:`GpuUnavailable` and every command exits 2. That
+is a refusal, not support: without a VRAM figure there is no way to tell a
+model that fits from one that hangs the machine, and guessing is the
+failure this package exists to prevent. Cross-platform here means Windows
+and Linux with an NVIDIA card, not every GPU.
 """
 
 from __future__ import annotations
@@ -81,6 +88,10 @@ def parse_nvidia_smi(output: str) -> list[Gpu]:
 
 def query_gpus() -> list[Gpu]:
     """The GPUs nvidia-smi reports right now.
+
+    NVIDIA only -- there is no AMD, Intel or Apple Silicon path, and none
+    is faked. See this module's docstring for why an unsupported GPU is a
+    refusal rather than a gap.
 
     Raises:
         GpuUnavailable: nvidia-smi missing, failing, or reporting nothing.

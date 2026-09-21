@@ -18,6 +18,7 @@ the run would not load:
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,17 +38,76 @@ class RoleModel:
         return self.model is not None
 
 
+_EXPANSION = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+
+def _expand(value: str, so_far: dict[str, str]) -> str:
+    """Substitute ``${VAR}`` and ``${VAR:-default}``.
+
+    python-dotenv expands inside single quotes too, unlike a POSIX shell,
+    so this is applied to every value regardless of quoting. An unset name
+    with no default becomes empty, which is also what python-dotenv does --
+    leaving the literal ``${VAR}`` would let a placeholder be sized as if
+    it were a model name.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        name, default = match.group(1), match.group(2)
+        if name in so_far and so_far[name]:
+            return so_far[name]
+        from_env = os.environ.get(name)
+        if from_env:
+            return from_env
+        return default or ""
+
+    return _EXPANSION.sub(replace, value)
+
+
+def _parse_value(raw: str, so_far: dict[str, str]) -> str:
+    """One ``KEY=`` right-hand side, the way python-dotenv reads it.
+
+    Quoted values keep their interior padding and lose anything after the
+    closing quote; unquoted values lose a ``#`` comment only when it is
+    preceded by whitespace, so ``has#hash`` survives intact.
+    """
+    text = raw.lstrip()
+    if text[:1] in ('"', "'"):
+        quote = text[0]
+        end = text.find(quote, 1)
+        if end != -1:
+            return _expand(text[1:end], so_far)
+        # Unterminated quote: fall through and treat it as unquoted rather
+        # than silently returning the rest of the line as a quoted value.
+        text = text[1:]
+    comment = re.search(r"(?:^|\s)#", text)
+    if comment:
+        text = text[: comment.start()]
+    return _expand(text.strip(), so_far)
+
+
 def read_env_file(path: str | os.PathLike[str]) -> dict[str, str]:
-    """``KEY=VALUE`` pairs from an env file. Missing file raises OSError."""
+    """``KEY=VALUE`` pairs from an env file. Missing file raises OSError.
+
+    Parsing follows python-dotenv rather than being merely approximate:
+    this module exists to predict what ``load_dotenv`` will hand the run,
+    and a parser that disagreed about a value would, in the words of the
+    module docstring, bless a model the run would not load.
+
+    Not modelled: backslash escapes inside double quotes. A model name or
+    endpoint has no use for them, and guessing at half of an escape
+    grammar would be worse than not claiming it.
+    """
     values: dict[str, str] = {}
     for raw in Path(path).read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
         key, sep, value = line.partition("=")
         if not sep:
             continue
-        values[key.strip()] = value.strip().strip('"').strip("'")
+        values[key.strip()] = _parse_value(value, values)
     return values
 
 
