@@ -1,0 +1,112 @@
+name: Outage check smoke test
+
+# The provider-outage path (leonarduk/laptop-egpu-llm#8) only executes when a
+# provider is genuinely down, so in normal operation it is never exercised
+# until the moment it matters. This runs the real publish script on demand
+# and checks the result, so the things that actually break in production get
+# proven rather than assumed:
+#
+#   * that `checks: write` survives the reusable-workflow boundary (a
+#     reusable workflow cannot hold more permission than its caller grants,
+#     so a caller missing the scope 403s)
+#   * that GitHub still accepts the `gh api` payload shape
+#   * that the conclusion lands as `neutral` rather than success/failure
+#
+# A stubbed `gh` cannot verify any of those. Manual only: it creates a real
+# check run, so it should not fire on every push.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit to attach the check run to (default: this ref's head)"
+        required: false
+        type: string
+      provider:
+        description: "Provider name to use in the check run title"
+        required: false
+        default: "Smoke test"
+        type: string
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  smoke:
+    name: Publish and verify a neutral check run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Publish the outage check run
+        id: publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PROVIDER: ${{ inputs.provider }}
+          INPUT_SHA: ${{ inputs.sha }}
+          FALLBACK_SHA: ${{ github.sha }}
+        run: |
+          SHA="${INPUT_SHA:-$FALLBACK_SHA}"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+          export SHA
+          export SUMMARY="Smoke test of the provider-outage path. This check is published by .github/scripts/publish_outage_check.sh, the same script _ai-pr-review.yml uses. It is not a real outage."
+
+          if ! bash .github/scripts/publish_outage_check.sh; then
+            echo "::error title=Outage check could not be published::The publish script failed after retries. In production this is what turns a provider outage into a bare green tick. Check that checks: write is granted and that $SHA is a valid commit."
+            exit 1
+          fi
+
+      # Publishing returning 0 is not proof: read it back and check what
+      # actually landed. A wrong conclusion would still "publish" fine and
+      # still leave the outage misreported.
+      - name: Verify the check run landed as neutral
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PROVIDER: ${{ inputs.provider }}
+          SHA: ${{ steps.publish.outputs.sha }}
+        run: |
+          NAME="$PROVIDER review: provider outage"
+
+          CONCLUSION=$(gh api "repos/$REPO/commits/$SHA/check-runs" \
+            --jq "[.check_runs[] | select(.name == \"$NAME\")] | sort_by(.started_at) | last | .conclusion")
+
+          echo "check run     : $NAME"
+          echo "attached to   : $SHA"
+          echo "conclusion    : ${CONCLUSION:-<not found>}"
+
+          if [ -z "$CONCLUSION" ] || [ "$CONCLUSION" = "null" ]; then
+            echo "::error::The publish script reported success but no check run named '$NAME' is attached to $SHA."
+            exit 1
+          fi
+
+          if [ "$CONCLUSION" != "neutral" ]; then
+            echo "::error::Check run landed with conclusion '$CONCLUSION', not 'neutral'. A non-neutral conclusion changes whether an outage blocks a merge."
+            exit 1
+          fi
+
+          {
+            echo "## Outage check smoke test passed"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| check run | \`$NAME\` |"
+            echo "| commit | \`$SHA\` |"
+            echo "| conclusion | \`neutral\` |"
+            echo
+            echo "The publish script works end to end: \`checks: write\` is"
+            echo "granted, GitHub accepts the payload, and the conclusion is"
+            echo "\`neutral\`."
+            echo
+            echo "### What this does not prove"
+            echo
+            echo "Whether a \`neutral\` check **blocks a merge when required**."
+            echo "GitHub's documented behaviour is that \`neutral\` counts as"
+            echo "passing for required status checks, which would mean requiring"
+            echo "this check cannot make an outage blocking. Confirm that against"
+            echo "the branch protection on \`main\` before documenting it"
+            echo "(leonarduk/laptop-egpu-llm#28)."
+          } >> "$GITHUB_STEP_SUMMARY"

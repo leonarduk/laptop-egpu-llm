@@ -254,20 +254,13 @@ jobs:
           # to github.sha beats POSTing an empty sha, which just fails.
           SHA="${HEAD_SHA:-$FALLBACK_SHA}"
 
-          # Retried, because this check run IS the deliverable: a silently
-          # missing one recreates the green-and-meaningless state this whole
-          # change is about, one layer down.
+          # In a script so outage-check-smoke-test.yml can exercise this exact
+          # code on demand: it only ever runs when a provider is down, which
+          # is the worst time to discover a bug in it.
           published=false
-          for delay in 0 5 15; do
-            if [ "$delay" -gt 0 ]; then
-              echo "check-run POST failed, retrying in ${delay}s..." >&2
-              sleep "$delay"
-            fi
-            if gh api -X POST "repos/$REPO/check-runs" -f "name=$PROVIDER review: provider outage" -f "head_sha=$SHA" -f "status=completed" -f "conclusion=neutral" -f "output[title]=No review ran - provider unreachable" -f "output[summary]=$SUMMARY"; then
-              published=true
-              break
-            fi
-          done
+          if SHA="$SHA" SUMMARY="$SUMMARY" bash .github/scripts/publish_outage_check.sh; then
+            published=true
+          fi
 
           echo "::warning title=$PROVIDER review did not run::Provider outage - no review was performed. Not an approval."
 
