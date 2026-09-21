@@ -11,6 +11,7 @@ jobs:
       pull-requests: write
       contents: read
       issues: write
+      checks: write   # publish the provider-outage neutral check run (#8)
     uses: ./.github/workflows/_ai-pr-review.yml
     with:
       provider_name: DeepSeek

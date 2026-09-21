@@ -64,6 +64,7 @@ jobs:
       pull-requests: write
       contents: read
       issues: write
+      checks: write   # publish the provider-outage neutral check run (#8)
     steps:
       - uses: actions/checkout@v7
         with:
@@ -229,6 +230,73 @@ jobs:
             echo "approved=false" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+      # NOT continue-on-error. An outage must not block merging, and does
+      # not: the job is green on every path where the outage gets reported.
+      # But if the neutral check cannot be published then it is NOT reported,
+      # and the check list shows a bare green tick meaning nothing happened -
+      # which is the bug this closes. A workflow that cannot tell you the
+      # truth should fail rather than imply the comfortable answer.
+      - name: Publish ${{ inputs.provider_name }} outage as a neutral check
+        if: steps.check_approval.outputs.approved == 'skipped'
+        env:
+          GH_TOKEN: ${{ secrets.gh_token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PROVIDER: ${{ inputs.provider_name }}
+          PROVIDER_ID: ${{ inputs.provider_id }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          FALLBACK_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          SUMMARY="The provider was unreachable, so **no review was performed**. This is not an approval. Re-run [the workflow]($RUN_URL) once the provider is reachable if you want this PR reviewed before merge."
+
+          # head.sha is only populated for pull_request events; falling back
+          # to github.sha beats POSTing an empty sha, which just fails.
+          SHA="${HEAD_SHA:-$FALLBACK_SHA}"
+
+          # Retried, because this check run IS the deliverable: a silently
+          # missing one recreates the green-and-meaningless state this whole
+          # change is about, one layer down.
+          published=false
+          for delay in 0 5 15; do
+            if [ "$delay" -gt 0 ]; then
+              echo "check-run POST failed, retrying in ${delay}s..." >&2
+              sleep "$delay"
+            fi
+            if gh api -X POST "repos/$REPO/check-runs" -f "name=$PROVIDER review: provider outage" -f "head_sha=$SHA" -f "status=completed" -f "conclusion=neutral" -f "output[title]=No review ran - provider unreachable" -f "output[summary]=$SUMMARY"; then
+              published=true
+              break
+            fi
+          done
+
+          echo "::warning title=$PROVIDER review did not run::Provider outage - no review was performed. Not an approval."
+
+          {
+            echo "## :warning: $PROVIDER review did not run"
+            echo
+            echo "$SUMMARY"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Reviewers watch the PR, not check runs or job summaries.
+          {
+            echo "### :warning: $PROVIDER review did not run"
+            echo
+            echo "$SUMMARY"
+          } > "/tmp/${PROVIDER_ID}_outage.md"
+
+          if ! gh pr comment "$PR_NUMBER" --body-file "/tmp/${PROVIDER_ID}_outage.md"; then
+            echo "::warning::Could not post the outage notice to PR #$PR_NUMBER; it is in the job summary and the neutral check."
+          fi
+
+          # Last, so the annotation, summary and comment above are all emitted
+          # first: losing the check run should not also cost the channels that
+          # did work. A 403 here means checks: write is missing from the
+          # *calling* workflow - a reusable workflow cannot hold more than its
+          # caller grants.
+          if [ "$published" != true ]; then
+            echo "::error title=$PROVIDER outage check not published::Could not create the neutral check run after retries, so the check list would show a bare green tick for a PR nothing reviewed. Failing rather than leave that standing. Check that the calling workflow grants checks: write, and that head sha $SHA is valid."
+            exit 1
+          fi
 
       - name: Post ${{ inputs.provider_name }} review comment
         if: (success() || failure()) && !cancelled()
@@ -329,8 +397,33 @@ jobs:
             gh pr edit "$PR_NUMBER" --remove-label "Changes Requested"
           fi
 
+      # Three states, decided here from `approved` rather than inferred from
+      # the verdict step's outcome: true passes, false hard-fails as it always
+      # has, and skipped is the outage published above as a neutral check.
+      # Collapsing skipped into success is what made the gate meaningless (#8).
       - name: Fail if ${{ inputs.provider_name }} did not approve
-        if: always() && contains(fromJson('["failure","skipped"]'), steps.check_approval.outcome)
+        if: always()
+        env:
+          APPROVED: ${{ steps.check_approval.outputs.approved }}
+          OUTCOME: ${{ steps.check_approval.outcome }}
+          PROVIDER: ${{ inputs.provider_name }}
         run: |
-          echo "::error::${{ inputs.provider_name }} review: CHANGES REQUESTED — address the review findings before merging."
-          exit 1
+          case "$APPROVED" in
+            true)
+              echo "$PROVIDER review: APPROVED."
+              ;;
+            skipped)
+              echo "::warning::$PROVIDER review did not run (provider outage). This job is green because an outage does not block merging - see the neutral '$PROVIDER review: provider outage' check."
+              ;;
+            false)
+              echo "::error::$PROVIDER review: CHANGES REQUESTED - address the review findings before merging."
+              exit 1
+              ;;
+            *)
+              # No verdict at all: the step never ran because something earlier
+              # in the job failed. Reporting that as CHANGES REQUESTED sent
+              # people looking for review findings that were never written.
+              echo "::error::$PROVIDER review did not complete (verdict step outcome: $OUTCOME) - there is no review to act on. Check the earlier steps in this job."
+              exit 1
+              ;;
+          esac
