@@ -76,10 +76,20 @@
     .\Test-ModelFits.ps1 -Model qwen3.8-64k:latest -Strategy Proportional
     Check against the summed ceiling, having confirmed the runtime places
     layers proportionally rather than evenly.
+
+.EXAMPLE
+    .\Test-ModelFits.ps1 -EnvFile D:\workspace\GitHub\issue-worm\issue-worm-pro\.env
+    Check what a run started from that config would actually load, rather
+    than what happens to be pulled. Run this before starting the job.
 #>
-[CmdletBinding()]
+[CmdletBinding(DefaultParameterSetName = 'Explicit')]
 param(
+    [Parameter(ParameterSetName = 'Explicit', Position = 0)]
     [string[]]$Model,
+
+    [Parameter(ParameterSetName = 'FromEnv', Mandatory)]
+    [string]$EnvFile,
+
     [ValidateSet('Conservative', 'Proportional', 'Even')]
     [string]$Strategy = 'Conservative',
     [int]$HeadroomPercent = 20,
@@ -99,6 +109,86 @@ function Stop-Unsafe {
     Write-Output ''
     Write-Host "REFUSED: $Message" -ForegroundColor Red
     exit $Code
+}
+
+# --- resolving an env file's role models ---------------------------------
+# Only used by -EnvFile. issue-worm splits work across three roles, each
+# naming its own model, so "does it fit" has three answers and the largest
+# is the one that decides.
+
+function Read-EnvFile {
+    param([string]$Path)
+    $values = @{}
+    foreach ($line in Get-Content -Path $Path -ErrorAction Stop) {
+        $trimmed = $line.Trim()
+        if ($trimmed -eq '' -or $trimmed.StartsWith('#')) { continue }
+        $eq = $trimmed.IndexOf('=')
+        if ($eq -lt 1) { continue }
+        $key = $trimmed.Substring(0, $eq).Trim()
+        $values[$key] = $trimmed.Substring($eq + 1).Trim().Trim('"').Trim("'")
+    }
+    return $values
+}
+
+function Resolve-EnvValue {
+    # python-dotenv is loaded with override=False, so a real environment
+    # variable outranks the file. Mirrored here, or this would bless a model
+    # the run would not actually load - the two must agree about what is at
+    # risk.
+    param([string]$Name, [hashtable]$FileValues)
+    $real = [Environment]::GetEnvironmentVariable($Name)
+    if ($real -and $real.Trim()) { return $real.Trim() }
+    if ($FileValues.ContainsKey($Name) -and $FileValues[$Name].Trim()) {
+        return $FileValues[$Name].Trim()
+    }
+    return $null
+}
+
+function Get-CoderTargetModels {
+    # `name:host:port:model`, split at most three times: an Ollama model name
+    # carries a ":tag" of its own, so everything after the port is the model.
+    param([string]$Raw)
+    $models = @()
+    if (-not $Raw) { return $models }
+    foreach ($entry in $Raw.Split(',')) {
+        $parts = $entry.Trim().Split(':', 4)
+        $candidate = if ($parts.Count -eq 4) { $parts[3].Trim() } else { '' }
+        if ($candidate -and $models -notcontains $candidate) { $models += $candidate }
+    }
+    return $models
+}
+
+function Get-RoleModels {
+    param([string]$Path)
+    $fileValues = Read-EnvFile -Path $Path
+    $wanted = @()
+    foreach ($role in 'CODER', 'ANALYSER', 'TRIAGE') {
+        $source = Resolve-EnvValue -Name "$($role)_MODEL_SOURCE" -FileValues $fileValues
+        if (-not $source) { $source = 'local' }
+        if ($source.ToLower() -ne 'local') {
+            Write-Host ("  {0,-9} -> {1} (not local Ollama; skipped)" -f $role, $source)
+            continue
+        }
+        # A CODER_TARGETS entry overwrites the coder's OLLAMA_MODEL on every
+        # dispatch, so it is what would actually load.
+        $roleModels = @()
+        if ($role -eq 'CODER') {
+            $roleModels = @(Get-CoderTargetModels -Raw (Resolve-EnvValue -Name 'CODER_TARGETS' -FileValues $fileValues))
+        }
+        if ($roleModels.Count -eq 0) {
+            $one = Resolve-EnvValue -Name "$($role)_OLLAMA_MODEL" -FileValues $fileValues
+            if ($one) { $roleModels = @($one) }
+        }
+        if ($roleModels.Count -eq 0) {
+            Write-Host ("  {0,-9} -> local, but names no model; the runtime's own default applies and cannot be sized here" -f $role)
+            continue
+        }
+        foreach ($m in $roleModels) {
+            Write-Host ("  {0,-9} -> {1}" -f $role, $m)
+            if ($wanted -notcontains $m) { $wanted += $m }
+        }
+    }
+    return $wanted
 }
 
 # --- what is actually attached -------------------------------------------
@@ -183,7 +273,20 @@ try {
     Stop-Unsafe "Ollama is not reachable at $Endpoint ($($_.Exception.Message)), so model sizes cannot be established." 2
 }
 
-if (-not $Model -or $Model.Count -eq 0) {
+if ($EnvFile) {
+    if (-not (Test-Path $EnvFile)) {
+        Stop-Unsafe "env file '$EnvFile' does not exist, so the models a run would load cannot be established." 2
+    }
+    Write-Output "Roles configured by $EnvFile"
+    $Model = @(Get-RoleModels -Path $EnvFile)
+    Write-Output ''
+    if ($Model.Count -eq 0) {
+        Write-Output 'No local model is configured, so there is nothing that could overcommit VRAM.'
+        Write-Output ''
+        Write-Host 'OK - nothing to check.' -ForegroundColor Green
+        exit 0
+    }
+} elseif (-not $Model -or $Model.Count -eq 0) {
     $Model = @($tags.models | Sort-Object size -Descending | ForEach-Object { $_.name })
     if ($Model.Count -eq 0) { Stop-Unsafe "Ollama at $Endpoint has no models pulled." 2 }
 }
@@ -215,10 +318,12 @@ Write-Output ("Need = file size + {0}% headroom, against a {1:N2} GB budget." -f
 
 $tooBig = @($results | Where-Object { $_.Verdict -eq 'TOO BIG' })
 
-# An explicit -Model list is a request to load those; refuse if any is too
-# big. With no list this is a survey of everything pulled, where some models
-# being too big is the expected answer, not a failure.
-if ($PSBoundParameters.ContainsKey('Model') -and $tooBig.Count -gt 0) {
+# An explicit -Model list, or the models an -EnvFile says a run will load,
+# are both a statement of intent: refuse if any is too big. With neither,
+# this is a survey of everything pulled, where some models being too big is
+# the expected answer rather than a failure.
+$requested = $PSBoundParameters.ContainsKey('Model') -or $PSBoundParameters.ContainsKey('EnvFile')
+if ($requested -and $tooBig.Count -gt 0) {
     $names = ($tooBig | ForEach-Object { $_.Model }) -join ', '
     Stop-Unsafe "$names will not fit in $('{0:N2}' -f $ceiling) GB. Do not load it - this is the configuration that hangs the machine." 1
 }
