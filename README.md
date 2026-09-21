@@ -60,10 +60,31 @@ With the eGPU detached, a 27B model asks for ~11.3 GB against the internal card'
 ## Contents
 
 - [`diagnostics/`](diagnostics) - PowerShell scripts for inspecting and fixing GPU state
+- [`ollama/`](ollama) - fit-checked wrappers around Ollama, so a model that will not fit never gets loaded
+- [`docs/model-picker.md`](docs/model-picker.md) - what to run at 7.9 / 15.9 / 23.8 GB, and the sizing arithmetic behind it
 - [`docs/device-error-codes.md`](docs/device-error-codes.md) - what Device Manager codes actually mean here
 - [`docs/lmstudio-multi-gpu.md`](docs/lmstudio-multi-gpu.md) - making LM Studio use asymmetric GPUs properly
 - [`docs/bitlocker-notes.md`](docs/bitlocker-notes.md) - which steps risk a recovery-key prompt
 - [`logs/`](logs) - real failure output, for comparison against your own
+
+## Running a model safely
+
+`ollama run` will accept a model far larger than your GPUs can hold. These wrap it so that cannot happen:
+
+```powershell
+.\ollama\Start-Model.ps1 -Model qwen2.5-coder:7b     # loads only if it fits
+.\ollama\Get-LoadedModels.ps1                        # what is holding VRAM right now
+.\ollama\Stop-Model.ps1 -All                         # free it without stopping the server
+.\ollama\Measure-ModelSpeed.ps1 -Model qwen2.5-coder:7b -Repeat 3
+```
+
+First numbers from `Measure-ModelSpeed.ps1`, **internal card only, eGPU detached**:
+
+| Model | Generation | Prompt eval | GPU offload |
+|---|---|---|---|
+| `qwen2.5-coder:7b` | 52-56 tok/s | 322 / 2570 tok/s (cold / warm) | 100% |
+
+Generation is memory-bandwidth-bound, prompt eval is compute-bound, and offload is the figure that explains a disappointing rate - anything under 100% means layers are running on CPU.
 
 ## Was it worth it?
 
