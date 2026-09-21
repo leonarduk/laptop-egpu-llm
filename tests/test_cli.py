@@ -18,10 +18,22 @@ TWENTY_SEVEN_B = int(11.29 * GIB)
 
 
 class StubClient:
-    def __init__(self, sizes=None, loaded=None, ps_error=None, capabilities=None, generate=None):
+    def __init__(
+        self,
+        sizes=None,
+        loaded=None,
+        ps_error=None,
+        capabilities=None,
+        generate=None,
+        ps_error_after=None,
+    ):
         self._sizes = sizes or {}
         self._loaded = loaded or []
         self._ps_error = ps_error
+        # `stop` reads resident state twice - once to decide what to unload,
+        # once to report what is left. This fails only the later call, which
+        # is the case where the unload itself succeeded.
+        self._ps_error_after = ps_error_after
         self._capabilities = capabilities or ["completion"]
         self._generate = generate or {
             "eval_count": 100,
@@ -39,6 +51,8 @@ class StubClient:
         self.ps_calls += 1
         if self._ps_error:
             raise self._ps_error
+        if self._ps_error_after and self.ps_calls > self._ps_error_after:
+            raise OllamaUnavailable("server went away mid-unload")
         return self._loaded
 
     def capabilities(self, model):
@@ -143,6 +157,10 @@ def test_bench_keeps_its_results_when_the_post_run_read_fails(wire, capsys):
     # "GPU offload:" with the colon, because the warning above says
     # "...re-read GPU offload afterwards" and would match a looser needle.
     assert "GPU offload:" not in out
+    # Issue #18: the cause reaches the user. "could not re-read" reads the
+    # same whether the server died, refused the connection or returned a
+    # 500, and those want different responses.
+    assert "server went away" in out
 
 
 def test_bench_still_fails_when_the_benchmark_itself_fails(wire):
@@ -183,7 +201,40 @@ def test_stop_all_unloads_everything_resident(wire, capsys):
     assert "Unloading m" in capsys.readouterr().out
 
 
+def test_stop_reports_why_the_final_read_failed(wire, capsys):
+    """Issue #18, and the `stop` half of #14's reasoning: the unload
+    succeeded, so this still exits 0 - but it says what went wrong rather
+    than claiming 0.00 GB is held, which it has no basis for."""
+    wire(StubClient(loaded=[LoadedModel("m", 1000, 1000)], ps_error_after=1))
+    assert run(["stop", "--all"]) == cli.OK
+    out = capsys.readouterr().out
+    assert "could not re-read resident state" in out
+    assert "server went away mid-unload" in out
+    # The false claim #17 would have introduced by collapsing "read failed"
+    # into an empty list.
+    assert "still held by 0 resident" not in out
+
+
 def test_ps_with_nothing_resident(wire, capsys):
     wire(StubClient())
     assert run(["ps"]) == cli.OK
     assert "Nothing resident" in capsys.readouterr().out
+
+
+def test_endpoint_is_accepted_after_the_subcommand(wire):
+    """`ollama-tools stop --all --endpoint X` is what people type; argparse
+    rejects a parent-only flag there. Both orders must work."""
+    wire(StubClient())
+    assert run(["--endpoint", "http://host:1", "ps"]) == cli.OK
+    assert run(["ps", "--endpoint", "http://host:1"]) == cli.OK
+
+
+def test_subcommand_endpoint_does_not_clobber_the_parent_value():
+    """The SUPPRESS default matters: without it the subparser's own default
+    would overwrite an endpoint given before the subcommand."""
+    args = cli.build_parser().parse_args(["--endpoint", "http://given:1", "ps"])
+    assert args.endpoint == "http://given:1"
+
+
+def test_endpoint_defaults_when_given_nowhere():
+    assert cli.build_parser().parse_args(["ps"]).endpoint == "http://localhost:11434"

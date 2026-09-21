@@ -243,9 +243,12 @@ def _stop(args) -> int:
         still = client.loaded_models()
         held = sum(m.size_vram_bytes for m in still)
         print(f"\n{_gib(held)} still held by {len(still)} resident model(s).")
-    except OllamaUnavailable:
+    except OllamaUnavailable as exc:
         # The unload succeeded; failing to re-read state is not a failure.
-        print("\nUnloaded (could not re-read resident state).")
+        # The cause is carried through because "could not re-read" reads the
+        # same whether the server died, refused the connection or returned a
+        # 500, and those want different responses from whoever sees it.
+        print(f"\nUnloaded (could not re-read resident state: {exc}).")
     return OK
 
 
@@ -282,9 +285,12 @@ def _bench(args) -> int:
     # succeeded as a run that failed.
     try:
         live = [m for m in client.loaded_models() if m.name == model]
-    except OllamaUnavailable:
+    except OllamaUnavailable as exc:
         live = []
-        print("\nCould not re-read GPU offload afterwards; the timings above stand.")
+        print(
+            "\nCould not re-read GPU offload afterwards; the timings above "
+            f"stand. ({exc})"
+        )
 
     if live:
         model_state = live[0]
@@ -315,6 +321,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--endpoint", default="http://localhost:11434")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    def add_common(sub):
+        # Also on every subcommand, because `ollama-tools stop --all
+        # --endpoint X` is what people type and argparse would otherwise
+        # reject it as an unrecognised argument. SUPPRESS so an absent flag
+        # here leaves the top-level value alone instead of a subparser
+        # default silently clobbering it.
+        sub.add_argument("--endpoint", default=argparse.SUPPRESS)
+
     def add_fit_options(sub, with_model="optional"):
         if with_model == "optional":
             sub.add_argument("model", nargs="*", help="models to check; default is everything pulled")
@@ -326,19 +340,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     check = subparsers.add_parser("fit", help="does it fit? (checks only, loads nothing)")
     add_fit_options(check)
+    add_common(check)
     check.set_defaults(func=_check)
 
     start = subparsers.add_parser("start", help="load a model, only if it fits")
     add_fit_options(start, with_model="one")
     start.add_argument("--prompt", help="run one prompt instead of an interactive session")
+    add_common(start)
     start.set_defaults(func=_start)
 
     ps = subparsers.add_parser("ps", help="what is resident, and how much reached the GPU")
+    add_common(ps)
     ps.set_defaults(func=_ps)
 
     stop = subparsers.add_parser("stop", help="unload to reclaim VRAM; the server stays up")
     stop.add_argument("model", nargs="*")
     stop.add_argument("--all", action="store_true")
+    add_common(stop)
     stop.set_defaults(func=_stop)
 
     benchmark = subparsers.add_parser("bench", help="tok/s and GPU offload")
@@ -346,6 +364,7 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--prompt")
     benchmark.add_argument("--tokens", type=int, default=200)
     benchmark.add_argument("--repeat", type=int, default=1)
+    add_common(benchmark)
     benchmark.set_defaults(func=_bench)
     return parser
 
