@@ -230,6 +230,48 @@ jobs:
             exit 1
           fi
 
+      # A provider outage exits 0 with approved=skipped, so check_approval's
+      # outcome stays "success" and the gate at the end of this job never
+      # fires. Not blocking on someone else's downtime is deliberate, but it
+      # left the required check green while attesting nothing -- from the
+      # merge button that is indistinguishable from a real approval (#8).
+      # This says so in the three places someone might look, and changes
+      # nothing about whether the job passes.
+      - name: Report ${{ inputs.provider_name }} provider outage
+        if: steps.check_approval.outputs.approved == 'skipped'
+        continue-on-error: true  # Reporting must never be what fails a run.
+        env:
+          GH_TOKEN: ${{ secrets.gh_token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PROVIDER: ${{ inputs.provider_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          echo "::warning title=$PROVIDER review did not run::Provider outage - this check is green but NO review was performed. Do not read it as an approval."
+
+          {
+            echo "## :warning: $PROVIDER review did not run"
+            echo
+            echo "The provider was unreachable, so **no review was performed**."
+            echo "This check is green because an outage does not block merging,"
+            echo "not because the change was approved."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Reviewers watch the PR, not the job summary, and a green check with
+          # no review comment is the confusion this fixes.
+          {
+            echo "### :warning: $PROVIDER review did not run"
+            echo
+            echo "The provider was unreachable, so **no review was performed** on this PR."
+            echo
+            echo "The \`$PROVIDER AI code review\` check is green because a provider outage"
+            echo "does not block merging - **not** because this change was approved."
+            echo "Re-run [the workflow]($RUN_URL) once the provider is reachable if you"
+            echo "want it reviewed before merge."
+          } > /tmp/${{ inputs.provider_id }}_outage.md
+
+          gh pr comment "$PR_NUMBER" --body-file /tmp/${{ inputs.provider_id }}_outage.md \
+            || echo "::warning::Could not post the outage notice to PR #$PR_NUMBER; it is in the job summary."
+
       - name: Post ${{ inputs.provider_name }} review comment
         if: (success() || failure()) && !cancelled()
         continue-on-error: true  # If posting fails (e.g. API rate limit), don't fail job; review is also in Actions summary
@@ -331,6 +373,17 @@ jobs:
 
       - name: Fail if ${{ inputs.provider_name }} did not approve
         if: always() && contains(fromJson('["failure","skipped"]'), steps.check_approval.outcome)
+        env:
+          OUTCOME: ${{ steps.check_approval.outcome }}
+          PROVIDER: ${{ inputs.provider_name }}
         run: |
-          echo "::error::${{ inputs.provider_name }} review: CHANGES REQUESTED — address the review findings before merging."
+          # "failure" is the verdict step exiting 1, i.e. changes requested.
+          # "skipped" means it never ran, because something earlier in the job
+          # failed -- reporting that as CHANGES REQUESTED sent people looking
+          # for review findings that were never written.
+          if [ "$OUTCOME" = "skipped" ]; then
+            echo "::error::$PROVIDER review did not complete - the verdict step never ran, so there is no review to act on. Check the earlier steps in this job."
+          else
+            echo "::error::$PROVIDER review: CHANGES REQUESTED - address the review findings before merging."
+          fi
           exit 1
