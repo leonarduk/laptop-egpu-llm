@@ -147,9 +147,14 @@ jobs:
             *"no review was performed"*) : ;;
             *) fail "output.summary does not mention that no review was performed. Got: $SUMMARY_TEXT" ;;
           esac
+          # Exact $RUN_URL only, not a loose "actions/runs" fallback: RUN_URL
+          # is computed identically in this step and the one that built
+          # SUMMARY (same github.server_url/repository/run_id, same job), so
+          # it is guaranteed present -- a looser substring would only ever
+          # hide a real mismatch.
           case "$SUMMARY_TEXT" in
-            *"$RUN_URL"* | *"actions/runs"*) : ;;
-            *) fail "output.summary does not contain a run URL to follow up on. Got: $SUMMARY_TEXT" ;;
+            *"$RUN_URL"*) : ;;
+            *) fail "output.summary does not contain this run's URL ($RUN_URL). Got: $SUMMARY_TEXT" ;;
           esac
 
           {
