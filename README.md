@@ -61,9 +61,13 @@ Everything about Ollama and VRAM is Python, and runs the same on Windows and Ubu
 pip install -e .
 
 ollama-tools fit                              # survey: what can I run right now?
-ollama-tools fit qwen3.8-64k:latest           # exit 1 if it will not fit
+ollama-tools fit qwen3.8-216k:latest          # exit 1 if it will not fit
 ollama-tools fit --env-file ../issue-worm/issue-worm-pro/.env   # what will this *run* load?
 ```
+
+`qwen3.8-216k` is a locally rebuilt tag, not one `ollama pull` fetches by that
+name — see [`docs/ollama-multi-gpu.md`](docs/ollama-multi-gpu.md) for how it
+was built and measured.
 
 ## Contents
 
@@ -72,6 +76,7 @@ ollama-tools fit --env-file ../issue-worm/issue-worm-pro/.env   # what will this
 - [`docs/model-picker.md`](docs/model-picker.md) - what to run at 7.9 / 15.9 / 23.8 GB, and the sizing arithmetic behind it
 - [`docs/device-error-codes.md`](docs/device-error-codes.md) - what Device Manager codes actually mean here
 - [`docs/lmstudio-multi-gpu.md`](docs/lmstudio-multi-gpu.md) - making LM Studio use asymmetric GPUs properly
+- [`docs/ollama-multi-gpu.md`](docs/ollama-multi-gpu.md) - making Ollama use asymmetric GPUs properly (`OLLAMA_SCHED_SPREAD`, KV cache quantisation, where the env vars actually have to be set)
 - [`docs/bitlocker-notes.md`](docs/bitlocker-notes.md) - which steps risk a recovery-key prompt
 - [`logs/`](logs) - real failure output, for comparison against your own
 

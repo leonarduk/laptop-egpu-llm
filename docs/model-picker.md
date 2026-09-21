@@ -71,21 +71,25 @@ once headroom is counted.
 | Job | Size to aim for | On this machine |
 |---|---|---|
 | Coder | 14B at Q4 | `qwen2.5-coder:14b` (8.37 GB) |
-| General | 27B at IQ3 | `qwen3.8-64k` (11.29 GB) |
+| General | 27B at IQ3, *short context only* | `qwen3.8-64k` at a `num_ctx` under ~30k, ordinary context (11.29 + 20% = 13.5 GB) |
 
-The 27B fits here at ordinary context (11.29 + 20% = 13.5 GB) but **not at
-64k**: +40% is 15.8 GB, and the ceiling is built from *free* VRAM rather
-than installed — 2 x ~7.55 GB free is ~15.1 GB, not 2 x 7.93. Against
-nominal totals it looks like it just squeaks in, which is exactly the kind
-of arithmetic that ends in a reboot. For long context, move off the even
-split (23.8 GB proportional) or quantise the KV cache.
+A model's KV cache is reserved for its manifest's `num_ctx` on every load,
+whether or not a given prompt is anywhere near that long — see
+[`ollama-multi-gpu.md`](ollama-multi-gpu.md) for the measured bytes-per-token
+cost of raising it. `qwen3.8-216k` (this repo's actual pulled tag, rebuilt with
+`num_ctx 216000`) always reserves the full 216k KV cache and needs ~18-19 GB
+total, so it belongs in the proportional tier below, not here — it no longer
+fits an even split regardless of how short the prompt actually is. Only a
+build of this model with a short `num_ctx` (roughly 30k or less) fits this
+tier; measure with `ollama-tools fit`, do not assume from the model's
+architecture-max size.
 
 ### Both cards, proportional — ~23.8 GB
 
-| Job | Size to aim for |
-|---|---|
-| Coder | 32B at Q4 (~19.2 GB), or 14B at Q8 for higher fidelity at the same size |
-| General | 27B at Q4 (~16.2 GB) instead of IQ3 — same model, better quantisation |
+| Job | Size to aim for | On this machine |
+|---|---|---|
+| Coder | 32B at Q4 (~19.2 GB), or 14B at Q8 for higher fidelity at the same size | `qwen2.5-coder:32b` (18.49 GB) |
+| General | 27B at Q4 (~16.2 GB) instead of IQ3 — same model, better quantisation | `qwen3.8-216k` (11.29 GB weights + ~8 GB KV cache at 216k context, ~18-19 GB total) |
 
 Going from IQ3_S to Q4_K_M on a model you already run is often a better use
 of new VRAM than a bigger model at a worse quant.
@@ -104,6 +108,14 @@ trusting, and prefer whatever your own `Measure-ModelSpeed.ps1` numbers say.
 ## Checking before you load
 
 ```powershell
-.\diagnostics\Test-ModelFits.ps1 -Model qwen3.8-64k:latest
-.\ollama\Start-Model.ps1 -Model qwen3.8-64k:latest     # fit-checked launch
+.\diagnostics\Test-ModelFits.ps1 -Model qwen3.8-216k:latest
+.\ollama\Start-Model.ps1 -Model qwen3.8-216k:latest     # fit-checked launch
 ```
+
+`qwen3.8-216k` is a locally rebuilt tag (`ollama create` with `num_ctx 216000`
+against the `qwen3.8-64k` base pull), not something `ollama pull` will fetch by
+that name. If it's missing on a machine, that means the tag was never built
+there, not that the model failed to fit — see
+[`ollama-multi-gpu.md`](ollama-multi-gpu.md) for how the context ceiling was
+measured and how to rebuild it (and re-bisect for a different VRAM budget
+before assuming 216,000 carries over).
