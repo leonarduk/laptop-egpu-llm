@@ -1,0 +1,19 @@
+{
+  "files": {
+    ".github/ISSUE_TEMPLATE/bug_report.md": "38372ae9008a3619523a96b6c2994aa2d631b55ae1b9f68ea39e454c662b1610",
+    ".github/ISSUE_TEMPLATE/config.yml": "e71bea835ed1158881306294d96968f125b0b0c5eff66cd94df559336bd0b210",
+    ".github/ISSUE_TEMPLATE/feature_request.md": "b66baaa755536a282f9b56f4ebf3a3ee3e45e1b9192b75ad34b4876376ca9553",
+    ".github/ISSUE_TEMPLATE/task_chore.md": "c79314a8b40a3191c9eb9f398cfd295e9ede4f81b513b7833eea25f417284ad3",
+    ".github/cicaid-pins.env": "539e34c934e697df29a6c139247de2bb2770211ca557072fe532d46290a0df5a",
+    ".github/scripts/pip_install_cicaid_pro.sh": "f1f96ec858e887ecebde64220b6ed88bc52100aa58fb4bf2513cbadbe4548b1d",
+    ".github/scripts/update_cicaid_pins.py": "18aa919e79912988962c80e4880a204f785daf2ec3731ed0c9b4205bc62970f4",
+    ".github/workflows/_ai-pr-review.yml": "8ad950bed5510c1c778721cac752afc10da2b6b5c3c966f3fb3cd4bfd495c110",
+    ".github/workflows/codeql.yml": "4eec893a65d099a75118919398b9dc630533edd2992a00bb3089520aaf781d9c",
+    ".github/workflows/deepseek-pr-review.yml": "0968093290f53e966d3b2b5675f3625ec68e80fcaba27f44a85706779e051913",
+    ".github/workflows/dependency-review.yml": "f1ea2e8a7c6c7ba6f855fd57bcd6ca94998ac9278c52dad7ffcf8ec0bb30dcba",
+    ".github/workflows/gpt-pr-review.yml": "01ea72c61fcda1592f1ab44bf16e207a00ef6d6554ca095c3cf808a2ca4f1d46",
+    ".github/workflows/pr-lint.yml": "a0e12bf2c14acbf0a4ce1a86b79a358528212b59bc0a56cec3ccbfd4f1d66d2b",
+    ".github/workflows/update-cicaid.yml": "07c6345ab47761e8d2edda2a6ffd4c873a3c00d47fb7c15eec510c9a5759ecb6",
+    ".github/workflows/workflow-lint.yml": "640d1968ff710b475f913ec4681dfe1370b86a63fe7674f0f01ca4c885fb030b"
+  }
+}
