@@ -113,12 +113,18 @@ def _check(args) -> int:
 
     print("\nModels")
     verdicts = []
+    # Collected rather than returned on: a multi-role config with one model
+    # missing should say so once, with every other role's verdict alongside,
+    # instead of making you rerun to discover them one at a time.
+    #
+    # Only reachable for an explicit list or --env-file. A survey builds its
+    # list from `sizes` itself, so every name is pulled by construction.
+    unpulled: list[str] = []
     for name in models:
         if name not in sizes:
-            return _refuse(
-                f"'{name}' is not pulled, so its size is unknown (ollama pull {name}).",
-                CANNOT_ANSWER,
-            )
+            unpulled.append(name)
+            print(f"  {name:<40} not pulled - size unknown")
+            continue
         verdict = judge(name, sizes[name], budget, args.headroom)
         verdicts.append(verdict)
         state = "fits" if verdict.fits else f"TOO BIG by {verdict.short_gib:.2f} GB"
@@ -128,12 +134,21 @@ def _check(args) -> int:
         )
 
     too_big = [v for v in verdicts if not v.fits]
+    # "Will not fit" outranks "could not be sized" when both are true: both
+    # refuse and nothing loads either way, but a definite hazard is the more
+    # actionable thing to put in front of someone.
     if requested and too_big:
         names = ", ".join(v.model for v in too_big)
         return _refuse(
             f"{names} will not fit in {_gib(budget)}. "
             "Do not load it - this is the configuration that hangs the machine.",
             DOES_NOT_FIT,
+        )
+    if unpulled:
+        listed = "".join(f"\n  ollama pull {name}" for name in unpulled)
+        return _refuse(
+            f"{len(unpulled)} model(s) are not pulled, so their size is unknown:{listed}",
+            CANNOT_ANSWER,
         )
     if too_big:
         print(f"\n{len(too_big)} of {len(verdicts)} pulled models do not fit right now.")
@@ -257,9 +272,19 @@ def _bench(args) -> int:
                     f"prompt {run.prompt_tokens_per_second:.1f} tok/s, "
                     f"{run.total_seconds:.1f}s total"
                 )
-        live = [m for m in client.loaded_models() if m.name == model]
     except OllamaUnavailable as exc:
         return _refuse(str(exc), CANNOT_ANSWER)
+
+    # Deliberately outside the block above, for the reason _stop gives: the
+    # benchmark has already run and printed its timings, so a server that
+    # goes away before this follow-up read has cost us the offload figure,
+    # not the results. Returning CANNOT_ANSWER here would report a run that
+    # succeeded as a run that failed.
+    try:
+        live = [m for m in client.loaded_models() if m.name == model]
+    except OllamaUnavailable:
+        live = []
+        print("\nCould not re-read GPU offload afterwards; the timings above stand.")
 
     if live:
         model_state = live[0]
@@ -281,7 +306,11 @@ def _bench(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ollama-tools",
-        description="Check a model fits in attached VRAM before anything loads it.",
+        description=(
+            "Check a model fits in attached VRAM before anything loads it. "
+            "Windows and Linux; requires an NVIDIA GPU with nvidia-smi on "
+            "PATH -- other GPUs exit 2 rather than guess at a VRAM figure."
+        ),
     )
     parser.add_argument("--endpoint", default="http://localhost:11434")
     subparsers = parser.add_subparsers(dest="command", required=True)

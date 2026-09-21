@@ -53,7 +53,9 @@ Driver and enclosure diagnosis is Windows-only — `Get-PnpDevice`, `pnputil` an
 .\diagnostics\Test-DriverConflict.ps1
 ```
 
-Everything about Ollama and VRAM is Python, and runs the same on Windows and Ubuntu:
+Everything about Ollama and VRAM is Python, and runs the same on Windows and Ubuntu.
+
+**Requires an NVIDIA GPU with `nvidia-smi` on PATH.** There is no AMD, Intel or Apple Silicon path: without a VRAM figure there is no way to tell a model that fits from one that hangs the machine, so unsupported hardware exits 2 — a refusal, by design, rather than a guess.
 
 ```bash
 pip install -e .

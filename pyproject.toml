@@ -14,7 +14,7 @@ license = { text = "MIT" }
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "python-dotenv>=1"]  # dotenv is test-only: see tests/test_envfile.py parity test
 
 [project.scripts]
 ollama-tools = "ollama_tools.cli:main"
