@@ -49,7 +49,13 @@ With GPUs of different sizes, an **even split caps usable VRAM at twice the smal
 
 # Just check for the driver version collision
 .\diagnostics\Test-DriverConflict.ps1
+
+# Before loading anything: does it fit in the VRAM actually attached?
+.\diagnostics\Test-ModelFits.ps1                             # survey everything pulled
+.\diagnostics\Test-ModelFits.ps1 -Model qwen3.8-64k:latest   # exit 1 if it will not fit
 ```
+
+With the eGPU detached, a 27B model asks for ~11.3 GB against the internal card's 7.93 GB, spills into system memory and hangs the machine hard enough to need a reboot. `Test-ModelFits.ps1` answers that beforehand and exits non-zero rather than letting anything allocate. It defaults to the conservative even-split ceiling from point 3 above, so it will not tell you 23.8 GB is available when your runtime can only reach 15.9 GB.
 
 ## Contents
 
