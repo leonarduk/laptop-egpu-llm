@@ -135,6 +135,14 @@ def test_bench_keeps_its_results_when_the_post_run_read_fails(wire, capsys):
     assert "50.0 tok/s" in out
     assert "the timings above stand" in out
     assert client.ps_calls  # the re-read really was attempted
+    # Issue #16: the `if live:` guard is the behaviour the fix introduced,
+    # and the warning alone does not pin it. Move that print outside the
+    # guard and this would report "GPU offload: 0%" -- a figure invented
+    # from a read that never returned -- while still passing everything
+    # above.
+    # "GPU offload:" with the colon, because the warning above says
+    # "...re-read GPU offload afterwards" and would match a looser needle.
+    assert "GPU offload:" not in out
 
 
 def test_bench_still_fails_when_the_benchmark_itself_fails(wire):
