@@ -283,10 +283,14 @@ def _bench(args) -> int:
     # goes away before this follow-up read has cost us the offload figure,
     # not the results. Returning CANNOT_ANSWER here would report a run that
     # succeeded as a run that failed.
+    # None means the read failed; a list means it succeeded, and an empty one
+    # means the model genuinely is not resident. Collapsing those two into []
+    # made the missing offload line mean two different things, with the
+    # difference visible only as the presence of a warning further up.
     try:
-        live = [m for m in client.loaded_models() if m.name == model]
+        live: list | None = [m for m in client.loaded_models() if m.name == model]
     except OllamaUnavailable as exc:
-        live = []
+        live = None
         print(
             "\nCould not re-read GPU offload afterwards; the timings above "
             f"stand. ({exc})"
@@ -301,6 +305,16 @@ def _bench(args) -> int:
         )
         if pct < 99:
             print("Part of this model is on CPU, which is what caps the rate above.")
+    elif live is not None:
+        # Read fine, model gone. Unusual right after a benchmark, but it
+        # happens with OLLAMA_KEEP_ALIVE=0 or when a concurrent load evicts
+        # it -- and saying so beats omitting the line and leaving the reader
+        # to wonder which of the two happened.
+        print(
+            f"\n{model} is no longer resident, so GPU offload could not be "
+            "read. A keep-alive of 0, or another model loaded since, will do "
+            "this; the timings above stand."
+        )
     if not embedding:
         print(
             "\nGeneration is memory-bandwidth-bound and prompt eval is compute-bound,\n"

@@ -238,3 +238,31 @@ def test_subcommand_endpoint_does_not_clobber_the_parent_value():
 
 def test_endpoint_defaults_when_given_nowhere():
     assert cli.build_parser().parse_args(["ps"]).endpoint == "http://localhost:11434"
+
+
+def test_bench_says_so_when_the_model_is_no_longer_resident(wire, capsys):
+    """Issue #21: read succeeded, model gone. Distinct from a failed read,
+    which prints the other warning -- both used to be an omitted offload
+    line and nothing else."""
+    wire(StubClient({"m": SEVEN_B}, loaded=[]))
+    assert run(["bench", "m"]) == cli.OK
+    out = capsys.readouterr().out
+    assert "no longer resident" in out
+    assert "GPU offload:" not in out
+    # Not the read-failure warning: the read worked.
+    assert "Could not re-read" not in out
+
+
+def test_bench_read_failure_and_absent_model_say_different_things(wire, capsys):
+    """The pair that motivated #21 -- the two paths must not be mistakable
+    for each other."""
+    wire(StubClient({"m": SEVEN_B}, ps_error=OllamaUnavailable("boom")))
+    run(["bench", "m"])
+    failed = capsys.readouterr().out
+
+    wire(StubClient({"m": SEVEN_B}, loaded=[]))
+    run(["bench", "m"])
+    absent = capsys.readouterr().out
+
+    assert "Could not re-read" in failed and "no longer resident" not in failed
+    assert "no longer resident" in absent and "Could not re-read" not in absent
