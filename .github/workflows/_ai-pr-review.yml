@@ -401,22 +401,7 @@ jobs:
           OUTCOME: ${{ steps.check_approval.outcome }}
           PROVIDER: ${{ inputs.provider_name }}
         run: |
-          case "$APPROVED" in
-            true)
-              echo "$PROVIDER review: APPROVED."
-              ;;
-            skipped)
-              echo "::warning::$PROVIDER review did not run (provider outage). This job is green because an outage does not block merging - see the neutral '$PROVIDER review: provider outage' check."
-              ;;
-            false)
-              echo "::error::$PROVIDER review: CHANGES REQUESTED - address the review findings before merging."
-              exit 1
-              ;;
-            *)
-              # No verdict at all: the step never ran because something earlier
-              # in the job failed. Reporting that as CHANGES REQUESTED sent
-              # people looking for review findings that were never written.
-              echo "::error::$PROVIDER review did not complete (verdict step outcome: $OUTCOME) - there is no review to act on. Check the earlier steps in this job."
-              exit 1
-              ;;
-          esac
+          # In a script so outage-check-smoke-test.yml can drive this exact
+          # logic with a forced APPROVED=skipped, rather than a copy that
+          # could silently drift from what actually runs here.
+          bash .github/scripts/gate_decision.sh

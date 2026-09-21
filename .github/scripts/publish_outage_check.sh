@@ -25,8 +25,10 @@
 #   SHA       commit to attach the check run to
 #   SUMMARY   markdown body for the check run
 #
-# Exit: 0 published, 1 not published after retries. Prints nothing on
-# success; the caller owns the annotations.
+# Exit: 0 published, 1 not published after retries. On failure, the last
+# `gh api` response is printed to stderr so the cause is diagnosable without
+# re-running -- the production caller's own message only names the two most
+# likely causes (missing checks: write, bad SHA); this is the evidence.
 
 set -uo pipefail
 
@@ -41,15 +43,21 @@ for delay in 0 5 15; do
     echo "check-run POST failed, retrying in ${delay}s..." >&2
     sleep "$delay"
   fi
-  if gh api -X POST "repos/$REPO/check-runs" \
+  if RESPONSE=$(gh api -X POST "repos/$REPO/check-runs" \
     -f "name=$PROVIDER review: provider outage" \
     -f "head_sha=$SHA" \
     -f "status=completed" \
     -f "conclusion=neutral" \
     -f "output[title]=No review ran - provider unreachable" \
-    -f "output[summary]=$SUMMARY" >/dev/null; then
+    -f "output[summary]=$SUMMARY" 2>&1); then
+    # Printed to stderr rather than suppressed: the old inline loop let this
+    # reach the job log, and losing it was a real (if minor) observability
+    # regression -- the created check run's id/url used to be there for free.
+    echo "$RESPONSE" | (jq -r '"published: " + .html_url' 2>/dev/null || echo "$RESPONSE") >&2
     exit 0
   fi
 done
 
+echo "gh api response after final attempt:" >&2
+echo "$RESPONSE" >&2
 exit 1
