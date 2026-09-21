@@ -254,20 +254,13 @@ jobs:
           # to github.sha beats POSTing an empty sha, which just fails.
           SHA="${HEAD_SHA:-$FALLBACK_SHA}"
 
-          # Retried, because this check run IS the deliverable: a silently
-          # missing one recreates the green-and-meaningless state this whole
-          # change is about, one layer down.
+          # In a script so outage-check-smoke-test.yml can exercise this exact
+          # code on demand: it only ever runs when a provider is down, which
+          # is the worst time to discover a bug in it.
           published=false
-          for delay in 0 5 15; do
-            if [ "$delay" -gt 0 ]; then
-              echo "check-run POST failed, retrying in ${delay}s..." >&2
-              sleep "$delay"
-            fi
-            if gh api -X POST "repos/$REPO/check-runs" -f "name=$PROVIDER review: provider outage" -f "head_sha=$SHA" -f "status=completed" -f "conclusion=neutral" -f "output[title]=No review ran - provider unreachable" -f "output[summary]=$SUMMARY"; then
-              published=true
-              break
-            fi
-          done
+          if SHA="$SHA" SUMMARY="$SUMMARY" bash .github/scripts/publish_outage_check.sh; then
+            published=true
+          fi
 
           echo "::warning title=$PROVIDER review did not run::Provider outage - no review was performed. Not an approval."
 
@@ -408,22 +401,7 @@ jobs:
           OUTCOME: ${{ steps.check_approval.outcome }}
           PROVIDER: ${{ inputs.provider_name }}
         run: |
-          case "$APPROVED" in
-            true)
-              echo "$PROVIDER review: APPROVED."
-              ;;
-            skipped)
-              echo "::warning::$PROVIDER review did not run (provider outage). This job is green because an outage does not block merging - see the neutral '$PROVIDER review: provider outage' check."
-              ;;
-            false)
-              echo "::error::$PROVIDER review: CHANGES REQUESTED - address the review findings before merging."
-              exit 1
-              ;;
-            *)
-              # No verdict at all: the step never ran because something earlier
-              # in the job failed. Reporting that as CHANGES REQUESTED sent
-              # people looking for review findings that were never written.
-              echo "::error::$PROVIDER review did not complete (verdict step outcome: $OUTCOME) - there is no review to act on. Check the earlier steps in this job."
-              exit 1
-              ;;
-          esac
+          # In a script so outage-check-smoke-test.yml can drive this exact
+          # logic with a forced APPROVED=skipped, rather than a copy that
+          # could silently drift from what actually runs here.
+          bash .github/scripts/gate_decision.sh

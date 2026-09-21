@@ -1,0 +1,189 @@
+name: Outage check smoke test
+
+# The provider-outage path (leonarduk/laptop-egpu-llm#8) only executes when a
+# provider is genuinely down, so in normal operation the gate + publish
+# coupling is never exercised until the moment it matters. This forces that
+# path on demand and checks what actually happened, rather than what should
+# have happened:
+#
+#   * that the gate (.github/scripts/gate_decision.sh) treats a skipped
+#     verdict as non-blocking, exactly as _ai-pr-review.yml's real gate does
+#   * that the publish script (.github/scripts/publish_outage_check.sh)
+#     creates a check run GitHub actually accepts
+#   * that the check run lands with conclusion neutral and a summary that
+#     says what happened, not just that something did
+#
+# APPROVED=skipped below is a local override for this workflow only, not a
+# read from any real check_approval step -- _ai-pr-review.yml has no input
+# that lets a PR force this, and this workflow does not touch it.
+#
+# What this does NOT prove: that checks: write granted by a *caller* of
+# _ai-pr-review.yml (deepseek-pr-review.yml / gpt-pr-review.yml) actually
+# reaches the reusable workflow's job. This workflow declares checks: write
+# directly and calls the scripts itself, so it proves the scripts are
+# correct, not that the permission travels through that specific boundary.
+# That boundary was exercised for real on PR #26, when GPT hit a genuine
+# outage before ENABLE_GPT_REVIEW was set to false, and produced the check
+# run this workflow is modelled on.
+#
+# Manual only: it creates a real check run, so it should not fire on every
+# push.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit to attach the check run to (default: this ref's head)"
+        required: false
+        type: string
+      provider:
+        description: "Provider name to use in the check run title"
+        required: false
+        default: "Smoke test"
+        type: string
+
+concurrency:
+  # Two concurrent dispatches would both publish a check run to the same SHA
+  # and race to verify; there is no scenario where running two at once is
+  # useful.
+  group: outage-check-smoke-test
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  smoke:
+    name: Force a skipped verdict and verify the outage path
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Force a skipped verdict through the gate, and publish
+        id: run_path
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PROVIDER: ${{ inputs.provider }}
+          INPUT_SHA: ${{ inputs.sha }}
+          FALLBACK_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          SHA="${INPUT_SHA:-$FALLBACK_SHA}"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+          # This is the coupling the issue asked for: the same summary text
+          # production builds, then both scripts production calls, run in
+          # sequence exactly as _ai-pr-review.yml runs them.
+          SUMMARY="The provider was unreachable, so **no review was performed**. This is not an approval. Re-run [the workflow]($RUN_URL) once the provider is reachable if you want this PR reviewed before merge."
+          echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
+
+          echo "::group::publish_outage_check.sh"
+          if ! SHA="$SHA" SUMMARY="$SUMMARY" bash .github/scripts/publish_outage_check.sh; then
+            echo "::endgroup::"
+            echo "::error title=Outage check could not be published::The publish script failed after retries. In production this is what turns a provider outage into a bare green tick."
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::gate_decision.sh (forced APPROVED=skipped)"
+          # A forced local override, not a real verdict -- see the workflow
+          # header. The gate must exit 0 here: a provider outage must never
+          # fail the job, only the neutral check above should carry the
+          # signal.
+          if ! APPROVED=skipped OUTCOME=skipped PROVIDER="$PROVIDER" bash .github/scripts/gate_decision.sh; then
+            echo "::endgroup::"
+            echo "::error title=Gate failed on a skipped verdict::gate_decision.sh exited non-zero for APPROVED=skipped. A provider outage must not fail the job -- only the neutral check run should carry that signal."
+            exit 1
+          fi
+          echo "::endgroup::"
+
+      # Publishing and the gate both reporting success is not proof: read the
+      # check run back and inspect what actually landed. A wrong conclusion
+      # or an empty summary would still let both scripts exit 0.
+      - name: Verify the check run landed as neutral, with a real summary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PROVIDER: ${{ inputs.provider }}
+          SHA: ${{ steps.run_path.outputs.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          NAME="$PROVIDER review: provider outage"
+
+          RAW=$(gh api "repos/$REPO/commits/$SHA/check-runs")
+
+          # --arg, not string interpolation into the jq program: PROVIDER
+          # comes from workflow_dispatch input, so it is attacker-controlled
+          # by anyone with write access to the repo. max_by(.started_at)
+          # rather than sort_by(...)|last: check-run ordering from the API is
+          # not guaranteed, and this workflow just created the run in
+          # question, so "most recently started" is the correct selector
+          # even if two happen to share a name.
+          CHECK_RUN=$(echo "$RAW" | jq --arg name "$NAME" \
+            '[.check_runs[] | select(.name == $name)] | max_by(.started_at)')
+
+          CONCLUSION=$(echo "$CHECK_RUN" | jq -r '.conclusion // empty')
+          SUMMARY_TEXT=$(echo "$CHECK_RUN" | jq -r '.output.summary // empty')
+
+          echo "check run  : $NAME"
+          echo "attached to: $SHA"
+          echo "conclusion : ${CONCLUSION:-<not found>}"
+
+          fail() {
+            echo "::error::$1"
+            echo "--- raw gh api response ---" >&2
+            echo "$RAW" >&2
+            exit 1
+          }
+
+          [ -n "$CONCLUSION" ] || fail "No check run named '$NAME' is attached to $SHA."
+          [ "$CONCLUSION" = "neutral" ] || fail "Check run landed with conclusion '$CONCLUSION', not 'neutral'. A non-neutral conclusion changes whether an outage blocks a merge."
+
+          # The summary must say what happened, not just that the check ran.
+          # This is what a viewer actually reads; asserting only conclusion
+          # would pass a check run whose body was empty or wrong.
+          case "$SUMMARY_TEXT" in
+            *"no review was performed"*) : ;;
+            *) fail "output.summary does not mention that no review was performed. Got: $SUMMARY_TEXT" ;;
+          esac
+          # Exact $RUN_URL only, not a loose "actions/runs" fallback: RUN_URL
+          # is computed identically in this step and the one that built
+          # SUMMARY (same github.server_url/repository/run_id, same job), so
+          # it is guaranteed present -- a looser substring would only ever
+          # hide a real mismatch.
+          case "$SUMMARY_TEXT" in
+            *"$RUN_URL"*) : ;;
+            *) fail "output.summary does not contain this run's URL ($RUN_URL). Got: $SUMMARY_TEXT" ;;
+          esac
+
+          {
+            echo "## Outage check smoke test passed"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| check run | \`$NAME\` |"
+            echo "| commit | \`$SHA\` |"
+            echo "| conclusion | \`neutral\` |"
+            echo "| gate on skipped | exited 0 (job stays green) |"
+            echo
+            echo "\`publish_outage_check.sh\` and \`gate_decision.sh\` both ran"
+            echo "with the verdict forced to \`skipped\`, and the resulting"
+            echo "check run carries a summary that names the outage and links"
+            echo "back to a run."
+            echo
+            echo "### What this does not prove"
+            echo
+            echo "1. That \`checks: write\` granted by a *caller* workflow"
+            echo "   (deepseek-pr-review.yml / gpt-pr-review.yml) reaches"
+            echo "   \`_ai-pr-review.yml\` through the reusable-workflow"
+            echo "   boundary -- this workflow grants that permission itself."
+            echo "   The boundary was exercised for real on PR #26."
+            echo "2. Whether a \`neutral\` check **blocks a merge when"
+            echo "   required**. GitHub's documented behaviour is that"
+            echo "   \`neutral\` counts as passing for required status checks,"
+            echo "   which would mean requiring this check cannot make an"
+            echo "   outage blocking. Confirm against the branch protection"
+            echo "   on \`main\` before documenting it"
+            echo "   (leonarduk/laptop-egpu-llm#28)."
+          } >> "$GITHUB_STEP_SUMMARY"
