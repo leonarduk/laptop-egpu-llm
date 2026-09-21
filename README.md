@@ -65,6 +65,10 @@ ollama-tools fit qwen3.8-216k:latest          # exit 1 if it will not fit
 ollama-tools fit --env-file ../issue-worm/issue-worm-pro/.env   # what will this *run* load?
 ```
 
+`qwen3.8-216k` is a locally rebuilt tag, not one `ollama pull` fetches by that
+name — see [`docs/ollama-multi-gpu.md`](docs/ollama-multi-gpu.md) for how it
+was built and measured.
+
 ## Contents
 
 - [`ollama_tools/`](ollama_tools) - cross-platform fit checks and Ollama wrappers (Python, stdlib only)

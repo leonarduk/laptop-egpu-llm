@@ -111,9 +111,16 @@ runtime depends on the three settings above. Measured with all three set:
 ### How far the `qwen3.8-64k` tag (27B, IQ3_S) actually stretches
 
 The original 64,000 `num_ctx` in this tag's Modelfile was a conservative guess, not a
-measured ceiling. Bisecting `num_ctx` by hand (`curl .../api/generate` with an explicit
-`num_ctx` override, checking `/api/ps` for `size_vram == size` between each run, unloading
-with `ollama stop` between tests to avoid stale allocations skewing the result):
+measured ceiling. Bisecting `num_ctx` by hand — measured under
+`OLLAMA_SCHED_SPREAD=1`, `OLLAMA_FLASH_ATTENTION=1`, `OLLAMA_KV_CACHE_TYPE=q4_0`
+(the settings this doc sets as persistent User env vars above; the ceiling below is
+only valid for that combination, and **must be re-measured** if any of the three
+changes) using the script at
+[`diagnostics/measure-context-ceiling.sh`](../diagnostics/measure-context-ceiling.sh),
+unloading between each `num_ctx` with `ollama stop` to avoid a stale allocation
+skewing the next result, and confirmed with `nvidia-smi` that free VRAM was within
+~20 MiB across every run below (7325-7347 MiB free on GPU0 in every case, so this
+is not an artifact of some other app's GPU usage shifting between runs):
 
 | `num_ctx` | GPU offload |
 |---|---|
@@ -125,18 +132,40 @@ with `ollama stop` between tests to avoid stale allocations skewing the result):
 | 200,000 | 100% (18.73 / 18.73 GB) |
 | **216,000** | **100% (19.29 / 19.29 GB) — highest confirmed fully-resident value** |
 | 224,000 | 95.7% (17.98 / 18.79 GB) |
+| 240,000 | 95.7% (18.44 / 19.27 GB) |
 | 262,144 (arch max) | 95.7% (19.08 / 19.93 GB) |
+
+**The 224,000 row's *total* (18.79 GB) is smaller than 216,000's total (19.29 GB),
+despite the larger context — read that as a warning, not a typo.** Ollama's
+`/api/ps` "size" is not `weights + linear(num_ctx)`; it is however much VRAM the
+runtime's own fit-to-available-memory logic actually committed to for the
+allocation plan it landed on. Below 216k it can commit to a plan that puts
+everything on GPU. Above that, it falls back to a *different, smaller* plan that
+accepts partial CPU placement — not a bigger version of the same GPU-resident
+plan. That is why total footprint can drop while offload also drops: it is
+answering "what did the runtime actually build", not "how much would this
+context truly cost if fully resident". Take the offload percentage as the signal,
+not the size column, and do not assume either one grows monotonically with
+`num_ctx` past the ceiling.
 
 The tag's manifest was rebuilt with `num_ctx 216000` (`ollama create qwen3.8-64k:latest -f
 Modelfile`), which reclaims the difference for free: same 100% offload and near-identical
 speed as the 64k version, 3.4x the usable context. The tag was then renamed to match —
 `ollama cp qwen3.8-64k:latest qwen3.8-216k:latest && ollama rm qwen3.8-64k:latest` — since a
-name that no longer matches its actual context is worse than no name at all. Re-run this
-bisection after any `OLLAMA_KV_CACHE_TYPE` change — it directly changes the KV cache's
-bytes-per-token, so the 100%-offload ceiling moves with it. It also directly changes
-**every model's** VRAM footprint, not just this one: a model reserves KV cache for its
-manifest's `num_ctx` on every load regardless of the actual prompt length, so a large
-`num_ctx` is a standing cost, not a peak one.
+name that no longer matches its actual context is worse than no name at all.
+
+**The old `qwen3.8-64k:latest` tag no longer exists on this machine.** Anyone
+following an older copy of this repo's README or `model-picker.md` that still
+names it will get "model not found" from Ollama, not a fit check — pull the base
+model again and rebuild the tag with a `num_ctx` you've bisected for your own
+hardware, rather than assuming 216,000 carries over (it was measured on this
+specific 8 GB + 16 GB pair; a different VRAM budget needs its own bisection).
+
+Re-run this bisection after any `OLLAMA_KV_CACHE_TYPE` change — it directly changes
+the KV cache's bytes-per-token, so the 100%-offload ceiling moves with it. It also
+directly changes **every model's** VRAM footprint, not just this one: a model
+reserves KV cache for its manifest's `num_ctx` on every load regardless of the
+actual prompt length, so a large `num_ctx` is a standing cost, not a peak one.
 
 Two different things determine "context" here, and they are easy to conflate:
 `ollama show <model>` reports the **architecture's** maximum supported context

@@ -111,3 +111,11 @@ trusting, and prefer whatever your own `Measure-ModelSpeed.ps1` numbers say.
 .\diagnostics\Test-ModelFits.ps1 -Model qwen3.8-216k:latest
 .\ollama\Start-Model.ps1 -Model qwen3.8-216k:latest     # fit-checked launch
 ```
+
+`qwen3.8-216k` is a locally rebuilt tag (`ollama create` with `num_ctx 216000`
+against the `qwen3.8-64k` base pull), not something `ollama pull` will fetch by
+that name. If it's missing on a machine, that means the tag was never built
+there, not that the model failed to fit — see
+[`ollama-multi-gpu.md`](ollama-multi-gpu.md) for how the context ceiling was
+measured and how to rebuild it (and re-bisect for a different VRAM budget
+before assuming 216,000 carries over).
