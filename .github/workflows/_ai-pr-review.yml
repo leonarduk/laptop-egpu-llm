@@ -230,21 +230,14 @@ jobs:
             echo "approved=false" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
-      # A provider outage exits 0 with approved=skipped, so check_approval's
-      # outcome stays "success" and the gate below does not fire. Not blocking
-      # on someone else's downtime is deliberate -- but it left the required
-      # check green while attesting nothing, which from the merge button is
-      # indistinguishable from a real approval (#8).
-      #
-      # A job's conclusion can only be success or failure, so the third state
-      # cannot live on this job. It is published as its own check run with
-      # conclusion "neutral": visible in the PR's check list as neither a pass
-      # nor a failure, and neutral does not block merging. The job itself
-      # stays green, so the soft-fail intent is unchanged.
+      # NOT continue-on-error. An outage must not block merging, and does
+      # not: the job is green on every path where the outage gets reported.
+      # But if the neutral check cannot be published then it is NOT reported,
+      # and the check list shows a bare green tick meaning nothing happened -
+      # which is the bug this closes. A workflow that cannot tell you the
+      # truth should fail rather than imply the comfortable answer.
       - name: Publish ${{ inputs.provider_name }} outage as a neutral check
         if: steps.check_approval.outputs.approved == 'skipped'
-        continue-on-error: true  # Reporting must never be what fails a run.
         env:
           GH_TOKEN: ${{ secrets.gh_token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -257,36 +250,24 @@ jobs:
         run: |
           SUMMARY="The provider was unreachable, so **no review was performed**. This is not an approval. Re-run [the workflow]($RUN_URL) once the provider is reachable if you want this PR reviewed before merge."
 
-          # head.sha is only populated for pull_request events. Falling back to
-          # github.sha keeps the check attached to something rather than
-          # POSTing an empty sha, which fails.
+          # head.sha is only populated for pull_request events; falling back
+          # to github.sha beats POSTing an empty sha, which just fails.
           SHA="${HEAD_SHA:-$FALLBACK_SHA}"
 
-          # The distinct state the PR's check list actually shows, and the
-          # reason this step exists -- so it retries rather than accepting the
-          # first failure. A silently missing neutral check would recreate the
-          # green-and-meaningless state this whole change is about, one layer
-          # down.
+          # Retried, because this check run IS the deliverable: a silently
+          # missing one recreates the green-and-meaningless state this whole
+          # change is about, one layer down.
           published=false
           for delay in 0 5 15; do
             if [ "$delay" -gt 0 ]; then
               echo "check-run POST failed, retrying in ${delay}s..." >&2
               sleep "$delay"
             fi
-            if gh api -X POST "repos/$REPO/check-runs"                  -f "name=$PROVIDER review: provider outage"                  -f "head_sha=$SHA"                  -f "status=completed"                  -f "conclusion=neutral"                  -f "output[title]=No review ran - provider unreachable"                  -f "output[summary]=$SUMMARY"; then
+            if gh api -X POST "repos/$REPO/check-runs" -f "name=$PROVIDER review: provider outage" -f "head_sha=$SHA" -f "status=completed" -f "conclusion=neutral" -f "output[title]=No review ran - provider unreachable" -f "output[summary]=$SUMMARY"; then
               published=true
               break
             fi
           done
-
-          if [ "$published" != true ]; then
-            # ::error:: not ::warning::: without the neutral check the only
-            # signal left is prose, and prose next to a green tick is what
-            # #8 was about. A 403 here means checks: write is missing from
-            # the *calling* workflow -- a reusable workflow cannot hold more
-            # than its caller grants.
-            echo "::error title=$PROVIDER outage check not published::Could not create the neutral check run after retries, so the PR's check list shows nothing for this outage. Check that the calling workflow grants checks: write, and that the head sha ($SHA) is valid."
-          fi
 
           echo "::warning title=$PROVIDER review did not run::Provider outage - no review was performed. Not an approval."
 
@@ -303,7 +284,19 @@ jobs:
             echo "$SUMMARY"
           } > "/tmp/${PROVIDER_ID}_outage.md"
 
-          gh pr comment "$PR_NUMBER" --body-file "/tmp/${PROVIDER_ID}_outage.md" \n            || echo "::error::Could not post the outage notice to PR #$PR_NUMBER; it is in the job summary and the neutral check only."
+          if ! gh pr comment "$PR_NUMBER" --body-file "/tmp/${PROVIDER_ID}_outage.md"; then
+            echo "::warning::Could not post the outage notice to PR #$PR_NUMBER; it is in the job summary and the neutral check."
+          fi
+
+          # Last, so the annotation, summary and comment above are all emitted
+          # first: losing the check run should not also cost the channels that
+          # did work. A 403 here means checks: write is missing from the
+          # *calling* workflow - a reusable workflow cannot hold more than its
+          # caller grants.
+          if [ "$published" != true ]; then
+            echo "::error title=$PROVIDER outage check not published::Could not create the neutral check run after retries, so the check list would show a bare green tick for a PR nothing reviewed. Failing rather than leave that standing. Check that the calling workflow grants checks: write, and that head sha $SHA is valid."
+            exit 1
+          fi
 
       - name: Post ${{ inputs.provider_name }} review comment
         if: (success() || failure()) && !cancelled()
