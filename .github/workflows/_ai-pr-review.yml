@@ -64,6 +64,7 @@ jobs:
       pull-requests: write
       contents: read
       issues: write
+      checks: write   # publish the provider-outage neutral check run (#8)
     steps:
       - uses: actions/checkout@v7
         with:
@@ -231,46 +232,49 @@ jobs:
           fi
 
       # A provider outage exits 0 with approved=skipped, so check_approval's
-      # outcome stays "success" and the gate at the end of this job never
-      # fires. Not blocking on someone else's downtime is deliberate, but it
-      # left the required check green while attesting nothing -- from the
-      # merge button that is indistinguishable from a real approval (#8).
-      # This says so in the three places someone might look, and changes
-      # nothing about whether the job passes.
-      - name: Report ${{ inputs.provider_name }} provider outage
+      # outcome stays "success" and the gate below does not fire. Not blocking
+      # on someone else's downtime is deliberate -- but it left the required
+      # check green while attesting nothing, which from the merge button is
+      # indistinguishable from a real approval (#8).
+      #
+      # A job's conclusion can only be success or failure, so the third state
+      # cannot live on this job. It is published as its own check run with
+      # conclusion "neutral": visible in the PR's check list as neither a pass
+      # nor a failure, and neutral does not block merging. The job itself
+      # stays green, so the soft-fail intent is unchanged.
+      - name: Publish ${{ inputs.provider_name }} outage as a neutral check
         if: steps.check_approval.outputs.approved == 'skipped'
         continue-on-error: true  # Reporting must never be what fails a run.
         env:
           GH_TOKEN: ${{ secrets.gh_token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PROVIDER: ${{ inputs.provider_name }}
+          PROVIDER_ID: ${{ inputs.provider_id }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          echo "::warning title=$PROVIDER review did not run::Provider outage - this check is green but NO review was performed. Do not read it as an approval."
+          SUMMARY="The provider was unreachable, so **no review was performed**. This is not an approval. Re-run [the workflow]($RUN_URL) once the provider is reachable if you want this PR reviewed before merge."
+
+          # The distinct state the PR's check list actually shows.
+          gh api -X POST "repos/$REPO/check-runs"             -f "name=$PROVIDER review: provider outage"             -f "head_sha=$HEAD_SHA"             -f "status=completed"             -f "conclusion=neutral"             -f "output[title]=No review ran - provider unreachable"             -f "output[summary]=$SUMMARY"             || echo "::warning::Could not publish the neutral check run; the annotation and PR comment still record the outage."
+
+          echo "::warning title=$PROVIDER review did not run::Provider outage - no review was performed. Not an approval."
 
           {
             echo "## :warning: $PROVIDER review did not run"
             echo
-            echo "The provider was unreachable, so **no review was performed**."
-            echo "This check is green because an outage does not block merging,"
-            echo "not because the change was approved."
+            echo "$SUMMARY"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # Reviewers watch the PR, not the job summary, and a green check with
-          # no review comment is the confusion this fixes.
+          # Reviewers watch the PR, not check runs or job summaries.
           {
             echo "### :warning: $PROVIDER review did not run"
             echo
-            echo "The provider was unreachable, so **no review was performed** on this PR."
-            echo
-            echo "The \`$PROVIDER AI code review\` check is green because a provider outage"
-            echo "does not block merging - **not** because this change was approved."
-            echo "Re-run [the workflow]($RUN_URL) once the provider is reachable if you"
-            echo "want it reviewed before merge."
-          } > /tmp/${{ inputs.provider_id }}_outage.md
+            echo "$SUMMARY"
+          } > "/tmp/${PROVIDER_ID}_outage.md"
 
-          gh pr comment "$PR_NUMBER" --body-file /tmp/${{ inputs.provider_id }}_outage.md \
-            || echo "::warning::Could not post the outage notice to PR #$PR_NUMBER; it is in the job summary."
+          gh pr comment "$PR_NUMBER" --body-file "/tmp/${PROVIDER_ID}_outage.md"             || echo "::warning::Could not post the outage notice to PR #$PR_NUMBER; it is in the job summary."
 
       - name: Post ${{ inputs.provider_name }} review comment
         if: (success() || failure()) && !cancelled()
@@ -371,19 +375,33 @@ jobs:
             gh pr edit "$PR_NUMBER" --remove-label "Changes Requested"
           fi
 
+      # Three states, decided here from `approved` rather than inferred from
+      # the verdict step's outcome: true passes, false hard-fails as it always
+      # has, and skipped is the outage published above as a neutral check.
+      # Collapsing skipped into success is what made the gate meaningless (#8).
       - name: Fail if ${{ inputs.provider_name }} did not approve
-        if: always() && contains(fromJson('["failure","skipped"]'), steps.check_approval.outcome)
+        if: always()
         env:
+          APPROVED: ${{ steps.check_approval.outputs.approved }}
           OUTCOME: ${{ steps.check_approval.outcome }}
           PROVIDER: ${{ inputs.provider_name }}
         run: |
-          # "failure" is the verdict step exiting 1, i.e. changes requested.
-          # "skipped" means it never ran, because something earlier in the job
-          # failed -- reporting that as CHANGES REQUESTED sent people looking
-          # for review findings that were never written.
-          if [ "$OUTCOME" = "skipped" ]; then
-            echo "::error::$PROVIDER review did not complete - the verdict step never ran, so there is no review to act on. Check the earlier steps in this job."
-          else
-            echo "::error::$PROVIDER review: CHANGES REQUESTED - address the review findings before merging."
-          fi
-          exit 1
+          case "$APPROVED" in
+            true)
+              echo "$PROVIDER review: APPROVED."
+              ;;
+            skipped)
+              echo "::warning::$PROVIDER review did not run (provider outage). This job is green because an outage does not block merging - see the neutral '$PROVIDER review: provider outage' check."
+              ;;
+            false)
+              echo "::error::$PROVIDER review: CHANGES REQUESTED - address the review findings before merging."
+              exit 1
+              ;;
+            *)
+              # No verdict at all: the step never ran because something earlier
+              # in the job failed. Reporting that as CHANGES REQUESTED sent
+              # people looking for review findings that were never written.
+              echo "::error::$PROVIDER review did not complete (verdict step outcome: $OUTCOME) - there is no review to act on. Check the earlier steps in this job."
+              exit 1
+              ;;
+          esac
