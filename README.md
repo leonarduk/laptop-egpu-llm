@@ -43,24 +43,30 @@ With GPUs of different sizes, an **even split caps usable VRAM at twice the smal
 
 ## Quick start
 
+Driver and enclosure diagnosis is Windows-only — `Get-PnpDevice`, `pnputil` and Device Manager error codes have no Ubuntu equivalent, so those stay PowerShell:
+
 ```powershell
 # Full diagnostic dump - run this first
 .\diagnostics\Get-GpuState.ps1
 
 # Just check for the driver version collision
 .\diagnostics\Test-DriverConflict.ps1
-
-# Before loading anything: does it fit in the VRAM actually attached?
-.\diagnostics\Test-ModelFits.ps1                             # survey everything pulled
-.\diagnostics\Test-ModelFits.ps1 -Model qwen3.8-64k:latest   # exit 1 if it will not fit
 ```
 
-With the eGPU detached, a 27B model asks for ~11.3 GB against the internal card's 7.93 GB, spills into system memory and hangs the machine hard enough to need a reboot. `Test-ModelFits.ps1` answers that beforehand and exits non-zero rather than letting anything allocate. It defaults to the conservative even-split ceiling from point 3 above, so it will not tell you 23.8 GB is available when your runtime can only reach 15.9 GB.
+Everything about Ollama and VRAM is Python, and runs the same on Windows and Ubuntu:
+
+```bash
+pip install -e .
+
+ollama-tools fit                              # survey: what can I run right now?
+ollama-tools fit qwen3.8-64k:latest           # exit 1 if it will not fit
+ollama-tools fit --env-file ../issue-worm/issue-worm-pro/.env   # what will this *run* load?
+```
 
 ## Contents
 
-- [`diagnostics/`](diagnostics) - PowerShell scripts for inspecting and fixing GPU state
-- [`ollama/`](ollama) - fit-checked wrappers around Ollama, so a model that will not fit never gets loaded
+- [`ollama_tools/`](ollama_tools) - cross-platform fit checks and Ollama wrappers (Python, stdlib only)
+- [`diagnostics/`](diagnostics) - Windows-only PowerShell for inspecting and fixing GPU/driver state
 - [`docs/model-picker.md`](docs/model-picker.md) - what to run at 7.9 / 15.9 / 23.8 GB, and the sizing arithmetic behind it
 - [`docs/device-error-codes.md`](docs/device-error-codes.md) - what Device Manager codes actually mean here
 - [`docs/lmstudio-multi-gpu.md`](docs/lmstudio-multi-gpu.md) - making LM Studio use asymmetric GPUs properly
@@ -69,20 +75,27 @@ With the eGPU detached, a 27B model asks for ~11.3 GB against the internal card'
 
 ## Running a model safely
 
-`ollama run` will accept a model far larger than your GPUs can hold. These wrap it so that cannot happen:
+With the eGPU detached, a 27B model asks for ~11.3 GB against the internal card's 7.93 GB, spills into system memory and hangs the machine hard enough to need a reboot. `ollama run` will let you do that. These will not:
 
-```powershell
-.\ollama\Start-Model.ps1 -Model qwen2.5-coder:7b     # loads only if it fits
-.\ollama\Get-LoadedModels.ps1                        # what is holding VRAM right now
-.\ollama\Stop-Model.ps1 -All                         # free it without stopping the server
-.\ollama\Measure-ModelSpeed.ps1 -Model qwen2.5-coder:7b -Repeat 3
+```bash
+ollama-tools start qwen2.5-coder:7b      # loads only if it fits
+ollama-tools ps                          # what is holding VRAM, and how much reached the GPU
+ollama-tools stop --all                  # free it without stopping the server
+ollama-tools bench qwen2.5-coder:7b --repeat 3
 ```
 
-First numbers from `Measure-ModelSpeed.ps1`, **internal card only, eGPU detached**:
+Exit codes are the contract, so this can gate a script: **0** fine · **1** does not fit, nothing loaded · **2** the question could not be answered (no `nvidia-smi`, server down, model not pulled), also nothing loaded.
+
+There is deliberately no `--force`. If you believe a model fits because the runtime places layers proportionally, `--strategy proportional` says so in terms the check can act on. Otherwise the default assumes the even-split ceiling from point 3 above, so it will not claim 23.8 GB when your runtime can only reach 15.9 GB.
+
+First numbers from `ollama-tools bench`, **internal card only, eGPU detached**:
 
 | Model | Generation | Prompt eval | GPU offload |
 |---|---|---|---|
 | `qwen2.5-coder:7b` | 52-56 tok/s | 322 / 2570 tok/s (cold / warm) | 100% |
+| `nomic-embed-text` (embedding) | 768 dims in ~2.0s | n/a | 100% |
+
+Embedding models have no `generate` endpoint at all — Ollama answers *"does not support generate"* — so the capability is read from `/api/show` and `/api/embed` used instead, rather than failing confusingly.
 
 Generation is memory-bandwidth-bound, prompt eval is compute-bound, and offload is the figure that explains a disappointing rate - anything under 100% means layers are running on CPU.
 

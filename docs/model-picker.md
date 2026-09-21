@@ -73,9 +73,12 @@ once headroom is counted.
 | Coder | 14B at Q4 | `qwen2.5-coder:14b` (8.37 GB) |
 | General | 27B at IQ3 | `qwen3.8-64k` (11.29 GB) |
 
-The 27B fits here at ordinary context (11.29 + 20% = 13.5 GB) but is
-marginal at 64k (+40% = 15.8 GB, against a ~15.9 GB ceiling). For long
-context, move off the even split or quantise the KV cache.
+The 27B fits here at ordinary context (11.29 + 20% = 13.5 GB) but **not at
+64k**: +40% is 15.8 GB, and the ceiling is built from *free* VRAM rather
+than installed — 2 x ~7.55 GB free is ~15.1 GB, not 2 x 7.93. Against
+nominal totals it looks like it just squeaks in, which is exactly the kind
+of arithmetic that ends in a reboot. For long context, move off the even
+split (23.8 GB proportional) or quantise the KV cache.
 
 ### Both cards, proportional — ~23.8 GB
 
