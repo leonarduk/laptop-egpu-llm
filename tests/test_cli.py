@@ -221,6 +221,29 @@ def test_ps_with_nothing_resident(wire, capsys):
     assert "Nothing resident" in capsys.readouterr().out
 
 
+def test_coder_model_picks_7b_for_single_8gb_card(wire, capsys):
+    wire(StubClient(), gpus=ONE_CARD)
+    assert run(["coder-model"]) == cli.OK
+    assert "coder model: qwen2.5-coder:7b" in capsys.readouterr().out
+
+
+def test_coder_model_picks_qwen3_for_both_egpus(wire, capsys):
+    egpu = Gpu(1, "RTX 5060 Ti", 16311 * MIB, 16000 * MIB)
+    twin = Gpu(2, "RTX 5060 Ti (twin)", 16311 * MIB, 16000 * MIB)
+    wire(StubClient(), gpus=[egpu, twin])
+    assert run(["coder-model"]) == cli.OK
+    assert "coder model: qwen3.8-216k" in capsys.readouterr().out
+
+
+def test_coder_model_falls_back_when_gpu_unavailable(monkeypatch, capsys):
+    def raise_unavailable():
+        raise cli.GpuUnavailable("nvidia-smi not found")
+
+    monkeypatch.setattr(cli, "query_gpus", raise_unavailable)
+    assert run(["coder-model"]) == cli.OK
+    assert "qwen2.5-coder:0.5b" in capsys.readouterr().out
+
+
 def test_endpoint_is_accepted_after_the_subcommand(wire):
     """`ollama-tools stop --all --endpoint X` is what people type; argparse
     rejects a parent-only flag there. Both orders must work."""

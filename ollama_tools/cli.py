@@ -21,6 +21,7 @@ import sys
 
 from . import bench as bench_mod
 from .client import OllamaClient, OllamaUnavailable
+from .coder_model import CODER_FALLBACK, coder_model_for_budget
 from .envfile import models_to_check, read_env_file, role_models
 from .fit import DEFAULT_HEADROOM_PERCENT, judge
 from .gpu import CONSERVATIVE, GIB, GpuUnavailable, STRATEGIES, budget_bytes, query_gpus
@@ -252,6 +253,20 @@ def _stop(args) -> int:
     return OK
 
 
+def _coder_model(args) -> int:
+    try:
+        gpus = query_gpus()
+    except GpuUnavailable as exc:
+        print(f"{exc}. Falling back to the smallest coder model.")
+        print(CODER_FALLBACK)
+        return OK
+
+    budget = _describe_gpus(gpus, args.strategy)
+    model = coder_model_for_budget(budget)
+    print(f"\ncoder model: {model}")
+    return OK
+
+
 def _bench(args) -> int:
     code = _check(args)
     if code != OK:
@@ -366,6 +381,13 @@ def build_parser() -> argparse.ArgumentParser:
     ps = subparsers.add_parser("ps", help="what is resident, and how much reached the GPU")
     add_common(ps)
     ps.set_defaults(func=_ps)
+
+    coder_model = subparsers.add_parser(
+        "coder-model", help="pick the coder model that fits the VRAM attached right now"
+    )
+    coder_model.add_argument("--strategy", choices=STRATEGIES, default=CONSERVATIVE)
+    add_common(coder_model)
+    coder_model.set_defaults(func=_coder_model)
 
     stop = subparsers.add_parser("stop", help="unload to reclaim VRAM; the server stays up")
     stop.add_argument("model", nargs="*")

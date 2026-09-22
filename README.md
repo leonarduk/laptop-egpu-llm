@@ -89,7 +89,15 @@ ollama-tools start qwen2.5-coder:7b      # loads only if it fits
 ollama-tools ps                          # what is holding VRAM, and how much reached the GPU
 ollama-tools stop --all                  # free it without stopping the server
 ollama-tools bench qwen2.5-coder:7b --repeat 3
+ollama-tools coder-model                 # which coder model fits the VRAM attached right now
 ```
+
+`coder-model` picks from measured results, not advertised size: `qwen3.8-216k`
+for both cards, `qwen2.5-coder:7b` for the internal 8 GB card alone,
+`qwen2.5-coder:1.5b` at 3 GB, `qwen2.5-coder:0.5b` otherwise (including no
+GPU detected at all). See [`ollama_tools/coder_model.py`](ollama_tools/coder_model.py)
+for the tier boundaries, and use `ollama_tools.coder_model.get_coder_model()`
+directly if another project wants this decision without shelling out.
 
 Exit codes are the contract, so this can gate a script: **0** fine · **1** does not fit, nothing loaded · **2** the question could not be answered (no `nvidia-smi`, server down, model not pulled), also nothing loaded.
 
