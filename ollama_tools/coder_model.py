@@ -14,7 +14,7 @@ from .gpu import CONSERVATIVE, GIB, Gpu, GpuUnavailable, budget_bytes, query_gpu
 # (minimum budget in bytes, model), highest tier first. The first one the
 # budget clears wins.
 CODER_TIERS: tuple[tuple[int, str], ...] = (
-    (17 * GIB, "qwen3.8-216k"),
+    (18 * GIB, "qwen3.8-216k"),
     (7 * GIB, "qwen2.5-coder:7b"),
     (3 * GIB, "qwen2.5-coder:1.5b"),
 )

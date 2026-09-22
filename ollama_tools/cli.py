@@ -383,7 +383,8 @@ def build_parser() -> argparse.ArgumentParser:
     ps.set_defaults(func=_ps)
 
     coder_model = subparsers.add_parser(
-        "coder-model", help="pick the coder model that fits the VRAM attached right now"
+        "coder-model",
+        help="pick the coder model that fits the VRAM attached right now (always exits 0)",
     )
     coder_model.add_argument("--strategy", choices=STRATEGIES, default=CONSERVATIVE)
     add_common(coder_model)

@@ -21,12 +21,26 @@ def test_both_egpus_pick_qwen3():
     assert coder_model_for_budget(budget) == "qwen3.8-216k"
 
 
+def test_just_below_qwen3_tier_falls_to_7b():
+    """18 GiB matches the docstring's "~18-19 GB total" for qwen3.8-216k;
+    one byte under that must not promote it."""
+    assert coder_model_for_budget(18 * GIB - 1) == "qwen2.5-coder:7b"
+
+
 def test_single_8gb_card_picks_7b():
     assert coder_model_for_budget(int(7.7 * GIB)) == "qwen2.5-coder:7b"
 
 
+def test_just_below_7b_tier_falls_to_1_5b():
+    assert coder_model_for_budget(7 * GIB - 1) == "qwen2.5-coder:1.5b"
+
+
 def test_3gb_picks_1_5b():
     assert coder_model_for_budget(3 * GIB) == "qwen2.5-coder:1.5b"
+
+
+def test_just_below_1_5b_tier_falls_back():
+    assert coder_model_for_budget(3 * GIB - 1) == CODER_FALLBACK
 
 
 def test_below_3gb_falls_back_to_0_5b():
@@ -36,7 +50,7 @@ def test_below_3gb_falls_back_to_0_5b():
 def test_get_coder_model_uses_conservative_budget_of_both_cards():
     model = get_coder_model(CONSERVATIVE, [INTERNAL_8GB, EGPU_16GB])
     # conservative caps an asymmetric pair at 2x the smaller card, so this
-    # stays below the 17 GB qwen3.8-216k tier even though free VRAM sums to
+    # stays below the 18 GB qwen3.8-216k tier even though free VRAM sums to
     # ~23 GB.
     assert model == "qwen2.5-coder:7b"
 
