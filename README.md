@@ -89,9 +89,20 @@ ollama-tools start qwen2.5-coder:7b      # loads only if it fits
 ollama-tools ps                          # what is holding VRAM, and how much reached the GPU
 ollama-tools stop --all                  # free it without stopping the server
 ollama-tools bench qwen2.5-coder:7b --repeat 3
+ollama-tools coder-model                 # which coder model fits the VRAM attached right now
 ```
 
-Exit codes are the contract, so this can gate a script: **0** fine · **1** does not fit, nothing loaded · **2** the question could not be answered (no `nvidia-smi`, server down, model not pulled), also nothing loaded.
+`coder-model` picks from measured results, not advertised size: `qwen3.8-216k`
+for both cards, `qwen2.5-coder:7b` for the internal 8 GB card alone,
+`qwen2.5-coder:1.5b` at 3 GB, `qwen2.5-coder:0.5b` otherwise (including no
+GPU detected at all). See [`ollama_tools/coder_model.py`](ollama_tools/coder_model.py)
+for the tier boundaries, and use `ollama_tools.coder_model.get_coder_model()`
+directly if another project wants this decision without shelling out.
+Unlike every other subcommand, `coder-model` never refuses and always exits
+**0** — it always has a fallback answer, down to "no GPU at all", so the
+exit-code contract below does not apply to it.
+
+Exit codes are the contract for every other subcommand, so they can gate a script: **0** fine · **1** does not fit, nothing loaded · **2** the question could not be answered (no `nvidia-smi`, server down, model not pulled), also nothing loaded.
 
 There is deliberately no `--force`. If you believe a model fits because the runtime places layers proportionally, `--strategy proportional` says so in terms the check can act on. Otherwise the default assumes the even-split ceiling from point 3 above, so it will not claim 23.8 GB when your runtime can only reach 15.9 GB.
 
