@@ -1,10 +1,12 @@
 """Which coder model to reach for, given the VRAM attached right now.
 
-Tiers come from models actually measured on this machine (see
-docs/model-picker.md), not from advertised parameter counts:
+``CODER_TIERS`` is a fixed table, not a live lookup: the boundaries were
+derived once from models actually measured on this machine (see
+docs/model-picker.md), not from advertised parameter counts.
 ``qwen3.8-216k`` always reserves its full 216k KV cache and needs ~18-19 GB
 total, so it only belongs at the top tier -- a single eGPU is not enough to
-promote it.
+promote it. Re-measuring a model (a new build, a different quant) means
+updating this table by hand; nothing here reads bench results at runtime.
 """
 
 from __future__ import annotations

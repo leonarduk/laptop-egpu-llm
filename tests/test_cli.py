@@ -235,6 +235,27 @@ def test_coder_model_picks_qwen3_for_both_egpus(wire, capsys):
     assert "coder model: qwen3.8-216k" in capsys.readouterr().out
 
 
+def test_coder_model_cli_agrees_with_the_library_function(wire, capsys):
+    """The CLI's `_describe_gpus`-derived budget and the library's
+    `budget_bytes` must not diverge -- pin them to the same output."""
+    from ollama_tools.coder_model import get_coder_model
+    from ollama_tools.gpu import CONSERVATIVE
+
+    gpus = [Gpu(0, "RTX 5070 Laptop", 8151 * MIB, 7700 * MIB), Gpu(1, "RTX 5060 Ti", 16311 * MIB, 16000 * MIB)]
+    wire(StubClient(), gpus=gpus)
+    assert run(["coder-model"]) == cli.OK
+    out = capsys.readouterr().out
+    assert f"coder model: {get_coder_model(CONSERVATIVE, gpus)}" in out
+
+
+def test_coder_model_accepts_proportional_strategy(wire, capsys):
+    gpus = [Gpu(0, "RTX 5070 Laptop", 8151 * MIB, 7700 * MIB), Gpu(1, "RTX 5060 Ti", 16311 * MIB, 16000 * MIB)]
+    wire(StubClient(), gpus=gpus)
+    assert run(["coder-model", "--strategy", "proportional"]) == cli.OK
+    # 7700 + 16000 MiB free, proportional sum clears the 18 GiB qwen3 tier.
+    assert "coder model: qwen3.8-216k" in capsys.readouterr().out
+
+
 def test_coder_model_falls_back_when_gpu_unavailable(monkeypatch, capsys):
     def raise_unavailable():
         raise cli.GpuUnavailable("nvidia-smi not found")
