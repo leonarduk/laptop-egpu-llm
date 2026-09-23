@@ -26,8 +26,10 @@ together: 8 + 16 = 24 GB. 8 GB more than the article.
 <!-- Photo: the setup. Caption: "Big ugly box on left hand side, two monitors off to save GPU, and Kun working on an issue with my local LLM" -->
 
 Spoiler: I got there. But I'll say up front that it was
-hard, and in hindsight this is for hobbyists only. Maybe better
-to just buy a Mac; Mac users are spoiled with unified memory.
+hard, and in hindsight this is for hobbyists only. A former
+colleague bought a Mac with 96 GB of unified memory purely
+for local AI. At the time I thought that was a waste of
+money. Now I'm not so sure.
 
 ## One card or the other, never both
 
