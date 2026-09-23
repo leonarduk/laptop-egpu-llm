@@ -24,6 +24,7 @@ from .client import OllamaClient, OllamaUnavailable
 from .coder_model import CODER_FALLBACK, coder_model_for_budget
 from .envfile import models_to_check, read_env_file, role_models
 from .fit import DEFAULT_HEADROOM_PERCENT, judge
+from .kvcache import DEFAULT_KV_CACHE_TYPE, KV_CACHE_TYPES, KvCacheUnknown, kv_shape
 from .general_model import GENERAL_FALLBACK, general_model_for_budget
 from .gpu import CONSERVATIVE, GIB, GpuUnavailable, STRATEGIES, budget_bytes, query_gpus
 
@@ -95,6 +96,18 @@ def _resolve_requested(args, client: OllamaClient, sizes: dict[str, int]):
     return sorted(sizes, key=lambda n: sizes[n], reverse=True), False
 
 
+def _kv_request(args):
+    """(parallel, kv_cache_type, num_ctx), or parallel None for the
+    headroom-only check. Naming a KV type or context without a slot count
+    is still a question about the KV cache, so it means one slot."""
+    num_ctx = getattr(args, "num_ctx", None)
+    kv_type = args.kv_cache_type
+    parallel = args.parallel
+    if parallel is None and (num_ctx or kv_type):
+        parallel = 1
+    return parallel, kv_type or DEFAULT_KV_CACHE_TYPE, num_ctx
+
+
 def _check(args) -> int:
     try:
         gpus = query_gpus()
@@ -113,6 +126,10 @@ def _check(args) -> int:
         print("Nothing to check.")
         return OK
 
+    parallel, kv_type, num_ctx = _kv_request(args)
+    if parallel is not None:
+        print(f"\nBudgeting {parallel} parallel slot(s), KV cache {kv_type}")
+
     print("\nModels")
     verdicts = []
     # Collected rather than returned on: a multi-role config with one model
@@ -122,17 +139,46 @@ def _check(args) -> int:
     # Only reachable for an explicit list or --env-file. A survey builds its
     # list from `sizes` itself, so every name is pulled by construction.
     unpulled: list[str] = []
+    # Same collect-don't-return reasoning, for models whose KV cache cannot
+    # be computed (hybrid architectures): (name, why).
+    unsizable: list[tuple[str, str]] = []
     for name in models:
         if name not in sizes:
             unpulled.append(name)
             print(f"  {name:<40} not pulled - size unknown")
             continue
-        verdict = judge(name, sizes[name], budget, args.headroom)
+        kv_line = ""
+        kv_slot = 0
+        if parallel is not None:
+            try:
+                shape = kv_shape(client.show(name), num_ctx)
+            except OllamaUnavailable as exc:
+                return _refuse(f"{exc}", CANNOT_ANSWER)
+            except KvCacheUnknown as exc:
+                unsizable.append((name, str(exc)))
+                print(f"  {name:<40} KV cache cannot be computed - see below")
+                continue
+            kv_slot = shape.slot_bytes(kv_type)
+            kv_line = (
+                f"\n  {'':<40} + {parallel} x {_gib(kv_slot)} KV "
+                f"({shape.context:,} ctx per slot)"
+            )
+        verdict = judge(name, sizes[name], budget, args.headroom, parallel, kv_slot)
         verdicts.append(verdict)
         state = "fits" if verdict.fits else f"TOO BIG by {verdict.short_gib:.2f} GB"
         print(
-            f"  {name:<40} {verdict.size_gib:6.2f} GB + {args.headroom}% "
-            f"= {verdict.needed_gib:6.2f} GB  {state}"
+            f"  {name:<40} {verdict.size_gib:6.2f} GB + {args.headroom}%"
+            f"{kv_line} = {verdict.needed_gib:6.2f} GB  {state}"
+        )
+
+    if parallel is not None:
+        # The tool cannot see the server's environment (docs/ollama-multi-gpu.md
+        # section 3), so it can only answer the question it was asked.
+        print(
+            f"\nThis budgets {parallel} slot(s) with a {kv_type} KV cache. Ollama allocates\n"
+            "whatever the *server* was started with - OLLAMA_NUM_PARALLEL, and\n"
+            "OLLAMA_KV_CACHE_TYPE (only with OLLAMA_FLASH_ATTENTION=1). If those\n"
+            "differ, this answered a different question from the one the load will ask."
         )
 
     too_big = [v for v in verdicts if not v.fits]
@@ -145,6 +191,12 @@ def _check(args) -> int:
             f"{names} will not fit in {_gib(budget)}. "
             "Do not load it - this is the configuration that hangs the machine.",
             DOES_NOT_FIT,
+        )
+    if unsizable:
+        listed = "".join(f"\n  {name}: {why}" for name, why in unsizable)
+        return _refuse(
+            f"{len(unsizable)} model(s) have a KV cache that cannot be computed:{listed}",
+            CANNOT_ANSWER,
         )
     if unpulled:
         listed = "".join(f"\n  ollama pull {name}" for name in unpulled)
@@ -353,6 +405,13 @@ def _bench(args) -> int:
     return OK
 
 
+def _positive_int(text: str) -> int:
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ollama-tools",
@@ -381,6 +440,31 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("model", nargs=1)
         sub.add_argument("--strategy", choices=STRATEGIES, default=CONSERVATIVE)
         sub.add_argument("--headroom", type=int, default=DEFAULT_HEADROOM_PERCENT)
+        sub.add_argument(
+            "--parallel",
+            type=_positive_int,
+            help=(
+                "budget this many parallel slots (OLLAMA_NUM_PARALLEL), each with its own "
+                "full KV cache computed from the model's shape; default is the "
+                "headroom-only check"
+            ),
+        )
+        sub.add_argument(
+            "--kv-cache-type",
+            choices=sorted(KV_CACHE_TYPES),
+            help=(
+                f"the server's OLLAMA_KV_CACHE_TYPE (default {DEFAULT_KV_CACHE_TYPE}, the "
+                "largest; this tool cannot read the server's environment)"
+            ),
+        )
+        if with_model == "optional":
+            # fit only: start and bench load at the manifest's num_ctx, so an
+            # override there would pass a check the real load then fails.
+            sub.add_argument(
+                "--num-ctx",
+                type=_positive_int,
+                help="context per slot instead of the manifest's num_ctx, e.g. before rebuilding a tag",
+            )
 
     check = subparsers.add_parser("fit", help="does it fit? (checks only, loads nothing)")
     add_fit_options(check)

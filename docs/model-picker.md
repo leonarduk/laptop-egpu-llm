@@ -38,7 +38,7 @@ should be leaving anyway.
 "fits on paper" model into a failed load:
 
 - It scales linearly with context length. A model happy at 8k may not load at 64k.
-- It is multiplied by `n_slots`. Four parallel slots quadruple it; set slots to 1 unless you are genuinely serving concurrent requests.
+- It is multiplied by `n_slots`. Four parallel slots quadruple it; set slots to 1 unless you are genuinely serving concurrent requests. `ollama-tools fit <model> --parallel N` computes this for plain attention models instead of leaving it to headroom.
 - `Q8_0` KV quantisation roughly halves it for negligible quality cost; `Q4_0` quarters it.
 
 Rule of thumb: budget 15–20% on top at ordinary context, 35–50% at long

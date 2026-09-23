@@ -113,9 +113,13 @@ class OllamaClient:
         ``generate`` endpoint at all, and guessing from "embed" appearing
         in a name would be wrong in both directions.
         """
-        payload = self._request("/api/show", {"model": model}, timeout=20)
-        caps = payload.get("capabilities")
+        caps = self.show(model).get("capabilities")
         return [str(c) for c in caps] if isinstance(caps, list) else []
+
+    def show(self, model: str) -> dict:
+        """The raw /api/show response: capabilities, Modelfile parameters and
+        the GGUF ``model_info`` the KV cache is sized from."""
+        return self._request("/api/show", {"model": model}, timeout=20)
 
     def generate(self, model: str, prompt: str, num_predict: int, timeout: float = 600) -> dict:
         return self._request(

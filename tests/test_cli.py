@@ -26,6 +26,7 @@ class StubClient:
         capabilities=None,
         generate=None,
         ps_error_after=None,
+        show=None,
     ):
         self._sizes = sizes or {}
         self._loaded = loaded or []
@@ -43,6 +44,8 @@ class StubClient:
             "total_duration": 2_200_000_000,
         }
         self.ps_calls = 0
+        self._show = show or {}
+        self.show_calls = []
 
     def list_models(self):
         return [ModelInfo(n, s) for n, s in sorted(self._sizes.items(), key=lambda kv: -kv[1])]
@@ -57,6 +60,13 @@ class StubClient:
 
     def capabilities(self, model):
         return self._capabilities
+
+    def show(self, model):
+        self.show_calls.append(model)
+        payload = self._show.get(model)
+        if isinstance(payload, Exception):
+            raise payload
+        return payload or {}
 
     def generate(self, model, prompt, num_predict, timeout=600):
         return self._generate
@@ -354,3 +364,110 @@ def test_bench_read_failure_and_absent_model_say_different_things(wire, capsys):
 
     assert "Could not re-read" in failed and "no longer resident" not in failed
     assert "no longer resident" in absent and "Could not re-read" not in absent
+
+
+# --parallel: the KV cache is computed per slot and multiplied.
+
+FOURTEEN_B = int(8.37 * GIB)
+BOTH_CARDS = [
+    Gpu(0, "RTX 5070 Laptop", 8151 * MIB, 7700 * MIB),
+    Gpu(1, "RTX 5060 Ti", 16311 * MIB, 16000 * MIB),
+]
+QWEN25_14B_SHOW = {
+    "model_info": {
+        "general.architecture": "qwen2",
+        "qwen2.block_count": 48,
+        "qwen2.attention.head_count": 40,
+        "qwen2.attention.head_count_kv": 8,
+        "qwen2.embedding_length": 5120,
+        "qwen2.context_length": 32768,
+    }
+}
+HYBRID_SHOW = {
+    "model_info": {
+        "general.architecture": "qwen35",
+        "qwen35.block_count": 64,
+        "qwen35.full_attention_interval": 4,
+    }
+}
+
+
+def fourteen_b(**extra):
+    return StubClient({"qwen2.5-coder:14b": FOURTEEN_B}, show={"qwen2.5-coder:14b": QWEN25_14B_SHOW}, **extra)
+
+
+def test_without_parallel_the_kv_cache_is_not_consulted(wire):
+    """The default check is unchanged, and must not need /api/show."""
+    client = wire(fourteen_b(), gpus=BOTH_CARDS)
+    assert run(["fit", "qwen2.5-coder:14b", "--strategy", "proportional"]) == cli.OK
+    assert client.show_calls == []
+
+
+def test_parallel_slots_that_fit(wire, capsys):
+    """10.04 GB of weights+headroom plus 7 x 1.69 GB q4_0 slots = 21.9 GB."""
+    wire(fourteen_b(), gpus=BOTH_CARDS)
+    argv = ["fit", "qwen2.5-coder:14b", "--strategy", "proportional", "--parallel", "7", "--kv-cache-type", "q4_0"]
+    assert run(argv) == cli.OK
+    out = capsys.readouterr().out
+    assert "7 x 1.69 GB KV" in out
+    assert "OLLAMA_NUM_PARALLEL" in out
+
+
+def test_too_many_parallel_slots_do_not_fit(wire):
+    wire(fourteen_b(), gpus=BOTH_CARDS)
+    argv = ["fit", "qwen2.5-coder:14b", "--strategy", "proportional", "--parallel", "9", "--kv-cache-type", "q4_0"]
+    assert run(argv) == cli.DOES_NOT_FIT
+
+
+def test_kv_cache_type_defaults_to_the_largest(wire):
+    """f16 is the conservative default: 4 x 6 GB slots cannot fit."""
+    wire(fourteen_b(), gpus=BOTH_CARDS)
+    assert run(["fit", "qwen2.5-coder:14b", "--strategy", "proportional", "--parallel", "4"]) == cli.DOES_NOT_FIT
+
+
+def test_num_ctx_alone_means_one_slot(wire, capsys):
+    client = wire(fourteen_b(), gpus=BOTH_CARDS)
+    assert run(["fit", "qwen2.5-coder:14b", "--num-ctx", "8192"]) == cli.OK
+    assert client.show_calls == ["qwen2.5-coder:14b"]
+    assert "1 x 1.50 GB KV (8,192 ctx per slot)" in capsys.readouterr().out
+
+
+def test_hybrid_architecture_cannot_be_answered(wire, capsys):
+    wire(StubClient({"qwen3.8-216k:latest": TWENTY_SEVEN_B}, show={"qwen3.8-216k:latest": HYBRID_SHOW}), gpus=BOTH_CARDS)
+    assert run(["fit", "qwen3.8-216k:latest", "--parallel", "2"]) == cli.CANNOT_ANSWER
+    assert "measure-context-ceiling" in capsys.readouterr().err
+
+
+def test_a_model_that_does_not_fit_outranks_one_that_cannot_be_sized(wire):
+    wire(
+        StubClient(
+            {"qwen2.5-coder:14b": FOURTEEN_B, "hybrid": TWENTY_SEVEN_B},
+            show={"qwen2.5-coder:14b": QWEN25_14B_SHOW, "hybrid": HYBRID_SHOW},
+        ),
+        gpus=BOTH_CARDS,
+    )
+    assert run(["fit", "qwen2.5-coder:14b", "hybrid", "--parallel", "4"]) == cli.DOES_NOT_FIT
+
+
+def test_show_failing_is_cannot_answer(wire):
+    wire(StubClient({"m": SEVEN_B}, show={"m": OllamaUnavailable("boom")}))
+    assert run(["fit", "m", "--parallel", "2"]) == cli.CANNOT_ANSWER
+
+
+def test_start_refuses_when_the_slots_do_not_fit(wire):
+    wire(fourteen_b(), gpus=BOTH_CARDS)
+    assert run(["start", "qwen2.5-coder:14b", "--parallel", "4"]) == cli.DOES_NOT_FIT
+
+
+@pytest.mark.parametrize("command", ["start", "bench"])
+def test_num_ctx_is_fit_only(command):
+    """start and bench load at the manifest's num_ctx; an override there
+    would pass a check the real load then fails."""
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args([command, "m", "--num-ctx", "8192"])
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "two"])
+def test_parallel_must_be_a_positive_integer(value):
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["fit", "m", "--parallel", value])

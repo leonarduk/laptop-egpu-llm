@@ -114,6 +114,30 @@ at all", so the exit-code contract below does not apply to them.
 
 Exit codes are the contract for every other subcommand, so they can gate a script: **0** fine · **1** does not fit, nothing loaded · **2** the question could not be answered (no `nvidia-smi`, server down, model not pulled), also nothing loaded.
 
+### Parallel chats
+
+Ollama gives every parallel slot (`OLLAMA_NUM_PARALLEL`) its own full `num_ctx`
+of KV cache, reserved at load. A percentage headroom cannot cover that, so ask
+about slots directly:
+
+```bash
+ollama-tools fit qwen2.5-coder:14b --parallel 4 --kv-cache-type q4_0
+ollama-tools fit qwen2.5-coder:14b --parallel 4 --kv-cache-type q4_0 --num-ctx 16384  # before rebuilding a tag
+ollama-tools start qwen2.5-coder:14b --parallel 4 --kv-cache-type q4_0
+```
+
+With `--parallel`, the check becomes `weights x (1 + headroom) + slots x KV cache`,
+and the KV cache is computed from the model's own layer shape. `--kv-cache-type`
+defaults to `f16`, the largest, because the tool cannot read the server's
+environment. Pass what the server was actually started with. `--num-ctx` is only
+on `fit`, because `start` and `bench` load at the manifest's context.
+
+Hybrid architectures such as `qwen35` (and so `qwen3.8-216k`) and compressed-KV
+ones such as `deepseek2` exit **2**. The layer-shape formula does not hold for
+them, so bisect them with
+[`diagnostics/measure-context-ceiling.sh`](diagnostics/measure-context-ceiling.sh)
+instead.
+
 There is deliberately no `--force`. If you believe a model fits because the runtime places layers proportionally, `--strategy proportional` says so in terms the check can act on. Otherwise the default assumes the even-split ceiling from point 3 above, so it will not claim 23.8 GB when your runtime can only reach 15.9 GB.
 
 First numbers from `ollama-tools bench`, **internal card only, eGPU detached**:
