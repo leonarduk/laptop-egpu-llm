@@ -88,11 +88,39 @@ architecture-max size.
 
 | Job | Size to aim for | On this machine |
 |---|---|---|
-| Coder | 32B at Q4 (~19.2 GB), or 14B at Q8 for higher fidelity at the same size | `qwen2.5-coder:32b` (18.49 GB) |
-| General | 27B at Q4 (~16.2 GB) instead of IQ3 — same model, better quantisation | `qwen3.8-216k` (11.29 GB weights + ~8 GB KV cache at 216k context, ~18-19 GB total) |
+| Coder + general | 27B with long context | `qwen3.8-216k` (11.29 GB weights + ~8 GB KV cache at 216k context, ~18-19 GB total), or `qwen3.8-100k` (15 GB total) to leave room for a second model |
+| Quick jobs | 7B or 14B coder | `qwen2.5-coder:7b`, `qwen2.5-coder:14b` |
+
+A 32B coder at Q4 was tried here and dropped; see [Models tried on this machine](#models-tried-on-this-machine).
 
 Going from IQ3_S to Q4_K_M on a model you already run is often a better use
 of new VRAM than a bigger model at a worse quant.
+
+## Models tried on this machine
+
+Measured on the 8 GB + 16 GB pair with `OLLAMA_SCHED_SPREAD=1`, `OLLAMA_FLASH_ATTENTION=1`,
+`OLLAMA_KV_CACHE_TYPE=q4_0` and `OLLAMA_NUM_PARALLEL=1` unless stated. Numbers come from
+[`ollama-multi-gpu.md`](ollama-multi-gpu.md); "not measured" means installed but never benchmarked.
+
+| Model | Context | GPU offload | Generation | Verdict |
+|---|---|---|---|---|
+| `qwen3.8-216k` (27B, IQ3_S, `qwen35` arch) | 216,000 | 100% | 25.6 tok/s | **Kept.** Main model for long-context work. |
+| `qwen3.8-100k` (same weights, `num_ctx 100000`) | 100,000 | 100% (15 GB, KV 1.76 GB) | not measured | **Kept.** Frees ~4 GB for a second model. The `qwen35` arch ignores `OLLAMA_NUM_PARALLEL`, so it is not a way to get two chats on one model. |
+| `qwen2.5-coder:14b` | 32,768 | 100% | 37-38 tok/s | **Kept.** Fast coder for short tasks. |
+| `qwen2.5-coder:7b` | 32,768 | 100% | 65.9 tok/s | **Kept.** Fastest coder; also fits the internal card alone. |
+| `qwen3.5:9b` | 262,144 | 100% | 53.4 tok/s | **Kept.** Long context on a small budget. |
+| `nomic-embed-text` | n/a | 100% | 768 dims in ~2.0 s | **Kept.** Embeddings. |
+| `qwen2.5-coder:32b` (Q4) | 32,768 | 92% | 13.2 tok/s | **Removed 2026-09-23.** See below. |
+| `MHKetbi/Qwen2.5-Coder-32B-Instruct:q4_K_S` | 32,768 (manifest asks for 131,072) | 85% with `OLLAMA_NUM_PARALLEL=2` | not measured | **Removed 2026-09-23.** Duplicate of the above. |
+| `deepseek-r1:8b`, `DeepSeek-Qwen3-8B`, `gemma3:4b`, `logicbeat/qwen3.8-27B_GSQ_RCO` | | | not measured | Installed, not evaluated. |
+
+**Why the 32B coder went.** Qwen2.5-Coder-32B was trained for 32,768 tokens; Ollama loads
+it at 32,768 whatever the manifest's `num_ctx` says, and offers no way to switch on YaRN
+scaling for a GGUF that does not have it built in. Even at 32k with a `q4_0` KV cache it
+only reaches 92% offload, at half the speed of the 27B. At 128k the KV cache alone would be
+~9 GB on top of ~18 GB of weights, well over 24 GB. Coding tools fill context fast (system
+prompt, files read, conversation), so a 32k ceiling hurts more than any code-quality edge
+the specialist model might have. That quality edge was never measured here.
 
 ## Model families worth trying
 
