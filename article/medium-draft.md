@@ -5,8 +5,8 @@ Even on Claude Max I am burning through my tokens quickly,
 so I had started sending my overflow work to DeepSeek, as the per
 token costs are much lower. 
 That worked, but it got me wondering whether I could run something 
-decent on my own machine instead, with only elevated electricity costs to consider, 
-rather than API fees. 
+decent on my own machine instead, with the hardware as a one-off
+cost rather than an ongoing API bill.
 
 My laptop, a Lenovo Legion 5, has an RTX 5070
 with 8 GB. For local LLMs that is peanuts: 24 GB is closer
@@ -21,9 +21,9 @@ Or so I thought. It turns out all you need is a massive
 ugly black box and a big enough desk. Buy an RTX 5060 Ti 
 with 16 GB, put it in a Razer Core X V2 enclosure, 
 plug it into the laptop over USB4, and use both cards 
-together: 8 + 16 = 24 GB. 8 GB more than the article.
+together: 8 + 16 = 24 GB. That's 8 GB more than the article.
 
-<!-- Photo: the setup. Caption: "Big ugly box on left hand side, two monitors off to save GPU, and Kun working on an issue with my local LLM" -->
+<!-- Photo: the setup. Caption: "Big ugly box on the left-hand side, two monitors off to save GPU, and Kun working on an issue with my local LLM" -->
 
 Spoiler: I got there. But I'll say up front that it was
 hard, and in hindsight this is for hobbyists only. A former
@@ -164,11 +164,11 @@ Both cards, same driver, 24 GB between them. Finally.
 
 ## What 24 GB actually buys
 
-Getting Windows to see both cards turned out to be only half the battle. I dropped LM Studio, which couldn't split models across both GPUs properly and failed on anything over 8 GB. With hindsight it was probably its defaults: it splits a model evenly across unequal cards, and reserves memory for four chats at once. Both are fixable (the repo has the settings), but by then I'd moved to Ollama. For a front end I use [Kun Desktop](https://www.deepseek-gui.com/), a sort of Claude Desktop replacement that can use Ollama for its models; I use it mostly with DeepSeek and local LLMs.
+Getting Windows to see both cards turned out to be only half the battle. I dropped LM Studio, which couldn't split models across both GPUs properly and failed on anything over 8 GB. With hindsight it was probably its defaults: it splits a model evenly across unequal cards, and reserves memory for four chats at once. Both are fixable, but by then I'd moved to Ollama. For a front end I use [Kun Desktop](https://www.deepseek-gui.com/), a sort of Claude Desktop replacement that can use Ollama for its models; I use it mostly with DeepSeek and local LLMs.
 
 <!-- Photo. Caption: "Kun Desktop running a local 27B model, quantised of course" -->
 
-Left to itself, Ollama loaded a 14B coding model (Qwen2.5-Coder 14B) onto just one card, got only 62% of it into graphics memory and put the rest in normal memory: 14 tokens a second. One setting, `OLLAMA_SCHED_SPREAD=1`, told it to spread the model across both cards, and it jumped to 38 tokens a second. Hours of driver work, and then one environment variable nearly tripled the speed.
+Left to itself, Ollama loaded a 14B coding model (Qwen2.5-Coder 14B) onto just one card (probably the laptop's 8 GB one, since only 5.8 GB of it fitted), got only 62% of it into graphics memory and put the rest in normal memory: 14 tokens a second. One setting, `OLLAMA_SCHED_SPREAD=1`, told it to spread the model across both cards, and it jumped to 38 tokens a second. Hours of driver work, and then one environment variable nearly tripled the speed.
 
 ## The memory you don't see: the KV cache
 
@@ -176,7 +176,7 @@ The download size of a model is not what it needs to run. On top of the weights,
 
 Take "The eGPU was slow because it was on a cheap cable." When the model reaches "it", it needs to know what "it" refers to. It scores what it is looking for against the key of every earlier word. "eGPU" scores highest, so what it takes forward is a blend of all the values, weighted towards "eGPU"'s, with less of "slow" or "cable". The keys and values for "The", "eGPU", "was" and the rest never change, so rather than work them out again for every new word, the model keeps them. That store is the KV cache: in effect, the model's working memory for the conversation.
 
-The cache grows with the context length, and Ollama reserves the full amount the moment the model loads, whether you use it or not. My main model, a 27B Qwen 3.x squeezed down to 3-bit quantisation, is 11.3 GB of weights, but at a 216,000-token context it takes about 19 GB in total: the cache plus the working space around it.
+The cache grows with the context length, and Ollama reserves the full amount the moment the model loads, whether you use it or not. My main model is a 27B Qwen 3.x at IQ3_S, roughly 3-bit quantisation (`logicbeat/qwen3.8-27B_GSQ_RCO` on Ollama). It is 11.3 GB of weights, but at a 216,000-token context it takes about 19 GB in total: the cache plus the working space around it.
 
 The fix is to store the cache at lower precision. Turn on flash attention (`OLLAMA_FLASH_ATTENTION=1`, which the next setting needs), then `OLLAMA_KV_CACHE_TYPE=q8_0` roughly halves the cache for a negligible quality cost. `q4_0` quarters it, but that does cost some quality, more so at long contexts; I use it for the room, and `q8_0` is the safer choice if answers get worse. On a 32B coding model I tried (Qwen2.5-Coder 32B), going from the default full-precision cache to `q8_0` to `q4_0` took it from 72% on the cards at 7.8 tokens a second, to 83% at 10.3, to 92% at 13.2.
 
@@ -184,33 +184,33 @@ The fix is to store the cache at lower precision. Turn on flash attention (`OLLA
 
 The cache is per conversation: every chat a model answers at the same time gets its own full-size cache. I wanted two chats going at once, so I set `OLLAMA_NUM_PARALLEL=2` and rebuilt my 27B model with a 100,000-token context, so two chats would cost about the same as one at 216k.
 
-Then I read the Ollama log. My 27B model is a hybrid design, and Ollama "does not currently support parallel requests" for it, so the second chat just waits its turn. The rebuild wasn't wasted, though: at 100k the model takes 15 GB instead of 19 GB, leaving room for a second, smaller model alongside it. On the 32B model, which does support parallel chats, the second cache pushed 15% of the model back onto the CPU. So I've set it back to one. The details are in the how-to guide linked at the end.
+Then I read the Ollama log. My 27B model is a hybrid design, and Ollama "does not currently support parallel requests" for it, so the second chat just waits its turn. The rebuild wasn't wasted, though: at 100k the model takes 15 GB instead of 19 GB, leaving room for a second, smaller model alongside it. On the 32B model, which does support parallel chats, the second cache pushed 15% of the model back onto the CPU. So I've set it back to one.
 
-These are my final Ollama settings, set as Windows user environment variables (restart Ollama after changing them):
+These are my final Ollama settings: spread a model across both cards, turn on flash attention so the cache can shrink, a quarter-size `q4_0` cache (use `q8_0` if quality suffers), and one chat at a time. I set them as Windows user environment variables from PowerShell, then restart Ollama so it picks them up:
 
-```text
-OLLAMA_SCHED_SPREAD=1         # spread a model across both cards
-OLLAMA_FLASH_ATTENTION=1      # needed for the smaller cache
-OLLAMA_KV_CACHE_TYPE=q4_0     # quarter-size KV cache; costs some quality, q8_0 is safer
-OLLAMA_NUM_PARALLEL=1         # one chat at a time, one cache
+```powershell
+setx OLLAMA_SCHED_SPREAD 1
+setx OLLAMA_FLASH_ATTENTION 1
+setx OLLAMA_KV_CACHE_TYPE q4_0
+setx OLLAMA_NUM_PARALLEL 1
 ```
 
 With those, I run the 27B model at its 216,000-token context day to day, entirely on the graphics cards, at about 25 tokens a second. The 100k version is there for when I want a second model loaded alongside it. On a laptop. Next to a big ugly black box that doubles as a small fan heater for me.
 
-In the end I deleted the 32B coding model. It was stuck at a 32,000-token context, only got 92% onto the cards even with the smaller cache, and ran at half the speed of the 27B. Coding tools read whole files and long conversations, so context wins. My line-up now is the 27B for real work, with 7B and 14B Qwen coders for quick jobs. The full list of what I tried, and why, is in the repo.
+In the end I deleted the 32B coding model. It was stuck at a 32,000-token context, only got 92% onto the cards even with the smaller cache, and ran at half the speed of the 27B. Coding tools read whole files and long conversations, so context wins. My line-up now is the 27B for real work, with 7B and 14B Qwen coders for quick jobs. [The full list of what I tried, and why](https://github.com/leonarduk/laptop-egpu-llm/blob/main/docs/model-picker.md#models-tried-on-this-machine), is in the repo.
 
 It isn't perfect, though. 8 + 16 isn't one clean 24 GB pool: the laptop's own card also runs Windows and my displays. With all three external monitors connected I got constant display resets and flickering while a model ran, so I turn two of them off.
 
 ## Was it worth it?
 
-For me, yes, and mostly because of cost rather than speed. I have an app of my own, issue-worm, that works through a project's issues one at a time and fixes them. On DeepSeek I rationed it: at the worst I was spending about £2 a day, and a single chat that went into a tailspin could cost £6 on its own. The hardware cost about £1,000: around £600 for the card, and the rest for the enclosure and power supply. Against my worst DeepSeek spend of £2 a day, that's about 500 days, well over a year, before it pays for itself, and longer once you count the electricity. But that sum misses the point. Running locally, I can leave it working all the time without watching the meter, so I expect to use it more than before, not less. And it was never only about money: it was also an exercise in understanding AI better. Making a model fit taught me how these models actually use memory, from quantisation to the KV cache, in a way that calling an API never did.
+For me, yes, and mostly because of cost rather than speed. I have an app of my own, issue-worm, that works through a project's issues one at a time and fixes them. On DeepSeek I rationed it: at the worst I was spending about £2 a day, and a single chat that went into a tailspin could cost £6 on its own. The hardware cost about £1,000: around £600 for the card, and the rest for the enclosure and power supply. Against my worst DeepSeek spend of £2 a day, it pays for itself in about 500 days, well over a year. That's the best case: on a typical day I spent less, and the electricity isn't free. But that sum misses the point. Running locally, I can leave it working all the time without watching the meter, so I expect to use it more than before, not less. And it was never only about money: it was also an exercise in understanding AI better. Making a model fit taught me how these models actually use memory, from quantisation to the KV cache, in a way that calling an API never did.
 
-On the technical side: people worry that USB4 is too slow for an external card. I haven't measured it, but the way these tools split a model across cards, very little data should need to cross the cable while it runs. Where I'd expect the cable to show is loading a model, which means copying gigabytes of weights across it. What matters is getting the whole model into graphics memory, and that's exactly what the second card buys you.
+People worry that USB4 is too slow for an external card. I haven't measured it, but once a model is loaded very little data crosses the cable; what matters is getting the whole model into graphics memory, and that's what the second card buys you.
 
 But it is a hobbyist project, and if you try it, 
 the three things I'd tell you are:
 
-- **If only one NVIDIA card works at a time, check the driver versions first.** Then stop Windows Update from installing drivers (Group Policy: *Do not include drivers with Windows Update*), or it will do it again.
+- **If only one NVIDIA card works at a time, check the driver versions first.** Then stop Windows Update from installing drivers (Group Policy *Do not include drivers with Windows Updates*, or on Windows Home the registry value `ExcludeWUDriversInQualityUpdate` = 1), or it will do it again.
 - **Boot with the enclosure attached, and use Restart, not Shut down.**
 - **Budget for the KV cache, not just the model's download size.** Quantise it, and keep parallel chats to what you actually use.
 
