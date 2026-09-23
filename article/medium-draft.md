@@ -157,114 +157,37 @@ Both cards, same driver, 24 GB between them. Finally.
 
 ## What 24 GB actually buys
 
-Getting Windows to see both cards turned out to be only half
-the battle. I dropped LM Studio, which kept failing — it
-would not handle the two GPU properly and fail over 8GB — ,
-and now run with Ollama. I also use Kun Desktop, as a sort
-of Claude Desktop replacement that can use Ollama for its
-models. Its for DeepSeek and local LLMs mostly.
+Getting Windows to see both cards turned out to be only half the battle. I dropped LM Studio, which kept failing: it wouldn't use the two GPUs properly and fell over above 8 GB. Now I run Ollama. I also use Kun Desktop, a sort of Claude Desktop replacement that can use Ollama for its models. It's mostly for DeepSeek and local LLMs.
 
 <!-- Photo. Caption: "Kun desktop running a local 27b model, quantized of course" -->
 
-Left to itself, Ollama still put a 14B coding model 
-mostly on one card and spilled the rest into normal 
-memory: 14 tokens a second. 
-One setting, `OLLAMA_SCHED_SPREAD=1`, told it to spread
-the model across both cards, and it jumped to 38 tokens
-a second. Hours of driver work, and then one environment 
-variable nearly tripled the speed.
+Left to itself, Ollama still put a 14B coding model mostly on one card and spilled the rest into normal memory: 14 tokens a second. One setting, `OLLAMA_SCHED_SPREAD=1`, told it to spread the model across both cards, and it jumped to 38 tokens a second. Hours of driver work, and then one environment variable nearly tripled the speed.
 
 ## The memory you don't see: the KV cache
 
-The download size of a model is not what it needs to run. On
-top of the weights, every model needs a KV cache. KV stands
-for key-value. For every token the model reads, it works out
-two lists of numbers, a key and a value, that its attention
-step uses to look back over the conversation when choosing
-the next word. Rather than recalculate them for the whole
-conversation every time, it keeps them. That store is the KV
-cache: in effect, the model's working memory for the
-conversation. The cache grows with the context length, and
-Ollama reserves the full amount the moment the model loads,
-whether you use it or not. My 27B model is 11.3 GB of
-weights, but at a 216,000-token context its KV cache adds
-roughly another 8 GB.
+The download size of a model is not what it needs to run. On top of the weights, every model needs a KV cache. KV stands for key-value. For every token the model reads, it works out two lists of numbers, a key and a value, that its attention step uses to look back over the conversation when choosing the next word.
 
-That's why a 32B coding model I tried didn't fit at first. 
-The KV cache pushed it over, not the weights. The fix 
-is to store the cache at lower precision. Turn on flash 
-attention (`OLLAMA_FLASH_ATTENTION=1`, which the next 
-setting needs), then `OLLAMA_KV_CACHE_TYPE=q8_0` roughly
-halves the cache for a negligible quality cost, and `q4_0` 
-quarters it. On the 32B model that took it from 72% on the
-cards at 7.8 tokens a second, to 83% at 10.3, to 92% at 13.2.
+Take "The eGPU was slow because it was on a cheap cable." When the model reaches "it", it needs to know what "it" refers to. It compares what it is looking for against the key of every earlier word, and "eGPU" matches best, so it mixes in mostly the value of "eGPU" and very little of "slow" or "cable". The keys and values for "The", "eGPU", "was" and the rest never change, so rather than work them out again for every new word, the model keeps them. That store is the KV cache: in effect, the model's working memory for the conversation.
+
+The cache grows with the context length, and Ollama reserves the full amount the moment the model loads, whether you use it or not. My main model, a 27B Qwen 3.x squeezed down to 3-bit quantisation, is 11.3 GB of weights, but at a 216,000-token context it takes about 19 GB in total: the cache plus the working space around it.
+
+The fix is to store the cache at lower precision. Turn on flash attention (`OLLAMA_FLASH_ATTENTION=1`, which the next setting needs), then `OLLAMA_KV_CACHE_TYPE=q8_0` roughly halves the cache for a negligible quality cost, and `q4_0` quarters it. On a 32B coding model I tried, that took it from 72% on the cards at 7.8 tokens a second, to 83% at 10.3, to 92% at 13.2.
 
 ### More than one chat
 
-The cache is per conversation. Every chat the model is 
-answering at the same time gets its own full-size KV cache. 
-When I tried LM Studio, its log showed four parallel slots, 
-each reserving a full context, so it was setting aside four 
-times the memory I thought I needed.
+The cache is per conversation: every chat a model answers at the same time gets its own full-size cache. I wanted two chats going at once, so I set `OLLAMA_NUM_PARALLEL=2` and rebuilt my 27B model with a 100,000-token context, so two chats would cost about the same as one at 216k.
 
-I do want two chats going at once, 
-so I set `OLLAMA_NUM_PARALLEL=2` and rebuilt my 27B 
-model with a 100,000-token context instead of 216,000. 
-Two chats at 100k should cost about the same memory as one
-at 216k. (Ollama only reads its settings when it starts, 
-so restart it after changing them.)
+Then I read the Ollama log. My 27B model is a hybrid design, and Ollama "does not currently support parallel requests" for it, so the second chat just waits its turn. The rebuild wasn't wasted, though: at 100k the model takes 15 GB instead of 19 GB, leaving room for a second, smaller model alongside it. On the 32B model, which does support parallel chats, the second cache pushed 15% of the model back onto the CPU. So I've set it back to one. The details are in the how-to guide linked at the end.
 
-Then I read the Ollama log. It said the model's architecture 
-"does not currently support parallel requests". My 27B model
-is a hybrid design where only some of its layers use a normal
-KV cache, and Ollama won't run two chats on it at once. 
-The second chat just waits its turn. The rebuild wasn't 
-wasted, though. At 100k the whole model takes 15 GB instead
-of 19 GB, still entirely on the graphics cards, and its KV 
-cache is only 1.7 GB of that. That leaves room for a second,
-smaller model alongside it.
+With those three settings (spread across both cards, flash attention and the smaller cache) I'm running the 27B model with room for a 216,000-token context, entirely on the graphics cards, at about 25 tokens a second. On a laptop. Next to a big ugly black box that doubles as a small fan heater for me.
 
-On a model that does support parallel chats, the setting bites 
-the other way. A 32B coding model I tried went from one
-cache to two, 4.6 GB of cache in total, and 15% of the
-model got pushed back onto the CPU.
+In the end I deleted the 32B coding model. It was stuck at a 32,000-token context, only got 92% onto the cards even with the smaller cache, and ran at half the speed of the 27B. Coding tools read whole files and long conversations, so context wins. My line-up now is the 27B for real work, with 7B and 14B Qwen coders for quick jobs. The full list of what I tried, and why, is in the repo.
 
-So parallel chats cost a full cache each. Check the log to
-see what you actually got, and only turn it on if you'll
-really use it.
-
-The same goes for running different models side by side, 
-say a coding model in one chat and a general one in 
-another. Each loaded model needs its own weights and its 
-own cache, and they all have to share the same 24 GB.
-
-With all three settings on, I'm running a 27B model with 
-room for a 216,000-token context, entirely on the 
-graphics cards, at about 25 tokens a second. 
-On a laptop. Next to a big ugly black box that doubles
-as a small fan heater for me.
-
-I also tried a dedicated 32B coding model, and in the end 
-deleted it. It was stuck at a 32,000-token context, 
-only got 92% onto the cards even with the smaller cache, 
-and ran at half the speed of the 27B. Coding tools read whole 
-files and long conversations, so context wins. My line-up
-now is the 27B for real work, with 7B and 14B Qwen coders 
-for quick jobs. The full list of what I tried, and why,
-is in the repo.
-
-It isn't perfect, though. I had to turn off two of my 
-three external monitors while the model runs, to save GPU. 
-With all three connected I got constant display 
-resets and flickering.
+It isn't perfect, though. I had to turn off two of my three external monitors while the model runs, to save GPU. With all three connected I got constant display resets and flickering.
 
 ## Was it worth it?
 
-For inference, yes. People worry that USB4 is too slow for 
-an external card, but the way these tools split a model 
-across cards, very little data has to cross the cable. 
-What matters is getting the whole model into graphics 
-memory, and that's exactly what the second card buys you.
+For inference, yes. People worry that USB4 is too slow for an external card. I haven't measured it, but the way these tools split a model across cards, very little data should need to cross the cable while it runs. What matters is getting the whole model into graphics memory, and that's exactly what the second card buys you.
 
 But it is a hobbyist project, and if you try it, 
 the three things I'd tell you are:

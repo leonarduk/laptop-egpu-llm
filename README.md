@@ -94,23 +94,29 @@ ollama-tools coder-model                 # which coder model fits the VRAM attac
 ollama-tools general-model               # which general-purpose model fits the VRAM attached right now
 ```
 
-`coder-model` picks from measured results, not advertised size: `qwen2.5-coder:32b`
-for both cards, `qwen2.5-coder:7b` for the internal 8 GB card alone,
-`qwen2.5-coder:1.5b` at 3 GB, `qwen2.5-coder:0.5b` otherwise (including no
-GPU detected at all). See [`ollama_tools/coder_model.py`](ollama_tools/coder_model.py)
+`coder-model` picks from measured results, not advertised size, by VRAM budget:
+`qwen3.8-216k` at 18 GiB or more, `qwen3.8-100k` at 14 GiB, `qwen2.5-coder:14b`
+at 10 GiB, `qwen2.5-coder:7b` at 7 GiB (the internal 8 GB card alone),
+`qwen2.5-coder:1.5b` at 3 GiB, `qwen2.5-coder:0.5b` otherwise (including no
+GPU detected at all). On this 8 GB + 16 GB pair the default `conservative`
+budget (twice the smaller card, ~15 GiB) gives `qwen3.8-100k`; with
+`OLLAMA_SCHED_SPREAD=1` set on the server, `--strategy proportional` reflects
+where Ollama really puts the model and gives `qwen3.8-216k`. See [`ollama_tools/coder_model.py`](ollama_tools/coder_model.py)
 for the tier boundaries, and use `ollama_tools.coder_model.get_coder_model()`
 directly if another project wants this decision without shelling out.
 
-`general-model` is the same idea for chat/reasoning work: `qwen3.8-216k` for
-both cards, `qwen3.5:9b` for the internal 8 GB card alone, `gemma3:4b`
-otherwise (including no GPU detected at all). See
+`general-model` is the same idea for chat/reasoning work: `qwen3.8-216k` at
+18 GiB, `qwen3.8-100k` at 14 GiB, `qwen3.5:9b` at 7 GiB (the internal 8 GB card
+alone), `gemma3:4b` otherwise (including no GPU detected at all). See
 [`ollama_tools/general_model.py`](ollama_tools/general_model.py) for the tier
 boundaries, and use `ollama_tools.general_model.get_general_model()` directly
 if another project wants this decision without shelling out.
 
 Unlike every other subcommand, `coder-model` and `general-model` never refuse
 and always exit **0** — they always have a fallback answer, down to "no GPU
-at all", so the exit-code contract below does not apply to them.
+at all", so the exit-code contract below does not apply to them. They print
+only the model name on stdout (diagnostics go to stderr), so
+`$(ollama-tools coder-model)` works in a script.
 
 Exit codes are the contract for every other subcommand, so they can gate a script: **0** fine · **1** does not fit, nothing loaded · **2** the question could not be answered (no `nvidia-smi`, server down, model not pulled), also nothing loaded.
 
@@ -129,7 +135,16 @@ Generation is memory-bandwidth-bound, prompt eval is compute-bound, and offload 
 
 ## Was it worth it?
 
-Benchmarks pending. Honest answer so far: this is a hobbyist project. The hardware works, but getting there took considerably longer than the shopping did.
+For inference, yes. With both cards and the three Ollama settings in
+[`docs/ollama-multi-gpu.md`](docs/ollama-multi-gpu.md), a 27B model with a
+216,000-token context runs entirely on GPU at ~25.6 tok/s, and a 14B coder went
+from 14.2 to 37.9 tok/s just by spreading it across both cards. Full numbers:
+[`docs/ollama-multi-gpu.md`](docs/ollama-multi-gpu.md) and
+[`docs/model-picker.md`](docs/model-picker.md#models-tried-on-this-machine).
+
+It is still a hobbyist project: the hardware works, but getting there took
+considerably longer than the shopping did. To build one, follow
+[`docs/HOWTO.md`](docs/HOWTO.md).
 
 ## Licence
 
