@@ -1,4 +1,4 @@
-# How I turn a laptop into a desktop in my pursuit of a usable Local LLM
+# How I triple the graphics memory on my laptop in my pursuit of a usable Local LLM
 
 Like many, I love Claude Code. I also keep running out of tokens. 
 Even on Claude Max I am burning through my tokens quickly, 
