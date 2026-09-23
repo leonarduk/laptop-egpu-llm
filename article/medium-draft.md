@@ -141,8 +141,8 @@ and it doesn't try to be clever. The `.inf` files come from
 NVIDIA's own download, which is really an archive: Windows'
 built-in `tar` (or 7-Zip) unpacks it, and they are in the
 `Display.Driver` folder. With the eGPU unplugged and nothing
-holding the driver, I ran these from inside the `Display.Driver`
-folder, in an administrator PowerShell:
+holding the driver, I ran these from inside that folder, in an
+administrator PowerShell:
 
 ```powershell
 pnputil /add-driver nvlti.inf /install      # the laptop card
@@ -206,7 +206,7 @@ It isn't perfect, though. 8 + 16 isn't one clean 24 GB pool: the laptop's own ca
 
 ## Was it worth it?
 
-For me, yes, and mostly because of cost rather than speed. I have an app of my own, issue-worm, that works through a project's issues one at a time and fixes them. On DeepSeek I rationed it. My worst normal days cost about £2, and a single chat that went into a tailspin could cost £6 on its own. The hardware cost about £1,000: around £600 for the card, and the rest for the enclosure and power supply. At £2 a day, the £6 tailspins aside, it pays for itself in about 500 days, well over a year. That's the best case: on a typical day I spent less, and the electricity isn't free. On the other hand, DeepSeek has been raising its prices, so the sums tip further towards running locally over time.
+For me, yes, and mostly because of cost rather than speed. I have an app of my own, issue-worm, that works through a project's issues one at a time and fixes them. On DeepSeek I rationed it. My worst normal days cost about £2, and a single chat that went into a tailspin could cost £6 on its own. The hardware cost about £1,000: around £600 for the card, and the rest for the enclosure and power supply. At £2 a day, ignoring the occasional £6 tailspin, it pays for itself in about 500 days, well over a year. That's the best case: on a typical day I spent less, and the electricity isn't free. On the other hand, DeepSeek has been raising its prices, so the sums tip further towards running locally over time.
 
 But that sum misses the point. Running locally, I can leave it working all the time without watching the meter, so I expect to use it more than before, not less. Local also means private: my code and issues never leave the machine.
 
