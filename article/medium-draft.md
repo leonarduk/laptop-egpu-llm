@@ -1,9 +1,11 @@
 # How I tripled the graphics memory on my laptop to get a local LLM with a 200k context window
 
+*An eGPU, two NVIDIA drivers that wouldn't share, and a 27B model with a 216k context on a laptop*
+
 Like many, I love Claude Code. I also keep running out of tokens. 
 Even on Claude Max I am burning through my tokens quickly, 
-so I had started sending my overflow work to DeepSeek, as the per
-token costs are much lower. 
+so I had started sending my overflow work to DeepSeek, as the per-token
+costs are much lower. 
 That worked, but it got me wondering whether I could run something 
 decent on my own machine instead, with the hardware as a one-off
 cost rather than an ongoing API bill.
@@ -23,7 +25,7 @@ with 16 GB, put it in a Razer Core X V2 enclosure,
 plug it into the laptop over USB4, and use both cards 
 together: 8 + 16 = 24 GB. That's 8 GB more than Manolo's single card.
 
-<!-- Photo: the setup. Caption: "Big ugly box on the left-hand side, two monitors off to save GPU, and Kun working on an issue with my local LLM" -->
+<!-- Photo: the setup. Caption: "Big ugly box on the left-hand side, two monitors off to save GPU, and Kun Desktop working on an issue with my local LLM" -->
 
 Spoiler: I got there. But I'll say up front that it was
 hard, and in hindsight this is for hobbyists only. A former
@@ -138,8 +140,9 @@ packages. It doesn't check what hardware is plugged in,
 and it doesn't try to be clever. The `.inf` files come from
 NVIDIA's own download, which is really an archive: Windows'
 built-in `tar` (or 7-Zip) unpacks it, and they are in the
-`Display.Driver` folder. With the eGPU unplugged, nothing
-holding the driver, and in an administrator PowerShell:
+`Display.Driver` folder. With the eGPU unplugged and nothing
+holding the driver, I ran these from inside the `Display.Driver`
+folder, in an administrator PowerShell:
 
 ```powershell
 pnputil /add-driver nvlti.inf /install      # the laptop card
@@ -168,13 +171,13 @@ Getting Windows to see both cards turned out to be only half the battle. I dropp
 
 <!-- Photo. Caption: "Kun Desktop running a local 27B model, quantised of course" -->
 
-Left to itself, Ollama loaded a 14B coding model (Qwen2.5-Coder 14B) onto just one card (probably the laptop's 8 GB one, since only 5.8 GB of it fitted), got only 62% of it into graphics memory and put the rest in normal memory: 14 tokens a second. One setting, `OLLAMA_SCHED_SPREAD=1`, told it to spread the model across both cards, and it jumped to 38 tokens a second. Hours of driver work, and then one environment variable nearly tripled the speed.
+Left to itself, Ollama loaded a 14B coding model, Qwen2.5-Coder 14B, onto just one card, probably the laptop's 8 GB one. Only 62% of it fitted in graphics memory, and the rest went into normal memory: 14 tokens a second. One setting, `OLLAMA_SCHED_SPREAD=1`, told it to spread the model across both cards, and it jumped to 38 tokens a second. Hours of driver work, and then one environment variable nearly tripled the speed.
 
 ## The memory you don't see: the KV cache
 
 The download size of a model is not what it needs to run. On top of the weights, every model needs a KV cache. KV stands for key-value. For every token the model reads, it works out two lists of numbers, a key and a value, that its attention step uses to look back over the conversation when choosing the next word.
 
-Take "The eGPU was slow because it was on a cheap cable." When the model reaches "it", it needs to know what "it" refers to. It scores what it is looking for against the key of every earlier word. "eGPU" scores highest, so what it takes forward is a blend of all the values, weighted towards "eGPU"'s, with less of "slow" or "cable". The keys and values for "The", "eGPU", "was" and the rest never change, so rather than work them out again for every new word, the model keeps them. That store is the KV cache: in effect, the model's working memory for the conversation.
+Take "The eGPU was slow because it was on a cheap cable." When the model reaches "it", it needs to know what "it" refers to. It scores what it is looking for against the key of every earlier word. "eGPU" scores highest, so what it takes forward is mostly the value of "eGPU", with a little of "slow" and "cable". The keys and values for "The", "eGPU", "was" and the rest never change, so rather than work them out again for every new word, the model keeps them. That store is the KV cache: in effect, the model's working memory for the conversation.
 
 The cache grows with the context length, and Ollama reserves the full amount the moment the model loads, whether you use it or not. My main model is a 27B Qwen 3.x at IQ3_S, roughly 3-bit quantisation (`logicbeat/qwen3.8-27B_GSQ_RCO` on Ollama). It is 11.3 GB of weights, but at a 216,000-token context it takes about 19 GB in total: the cache plus the working space around it.
 
@@ -195,7 +198,7 @@ setx OLLAMA_KV_CACHE_TYPE q4_0
 setx OLLAMA_NUM_PARALLEL 1
 ```
 
-With those, I run the 27B model at its 216,000-token context day to day, entirely on the graphics cards, at about 25 tokens a second. The 100k version is there for when I want a second model loaded alongside it. On a laptop. Next to a big ugly black box that doubles as a small fan heater for me.
+With those, I run the 27B model at its 216,000-token context day to day, entirely on the graphics cards, at about 25 tokens a second. On a laptop. Next to a big ugly black box that doubles as a small fan heater for me. The 100k version is there for when I want a second model loaded alongside it.
 
 In the end I deleted the 32B coding model. It was stuck at a 32,000-token context, only got 92% onto the cards even with the smaller cache, and ran at half the speed of the 27B. Coding tools read whole files and long conversations, so context wins. My line-up now is the 27B for real work, with 7B and 14B Qwen coders for quick jobs. [The full list of what I tried, and why](https://github.com/leonarduk/laptop-egpu-llm/blob/main/docs/model-picker.md#models-tried-on-this-machine), is in the repo.
 
@@ -203,11 +206,13 @@ It isn't perfect, though. 8 + 16 isn't one clean 24 GB pool: the laptop's own ca
 
 ## Was it worth it?
 
-For me, yes, and mostly because of cost rather than speed. I have an app of my own, issue-worm, that works through a project's issues one at a time and fixes them. On DeepSeek I rationed it: at the worst I was spending about £2 a day, and a single chat that went into a tailspin could cost £6 on its own. The hardware cost about £1,000: around £600 for the card, and the rest for the enclosure and power supply. Against my worst DeepSeek spend of £2 a day, ignoring spikes, it pays for itself in about 500 days, well over a year. That's the best case: on a typical day I spent less, and the electricity isn't free. Against that, DeepSeek has been raising its prices, so the sums tip further towards running locally over time. But that sum misses the point. Running locally, I can leave it working all the time without watching the meter, so I expect to use it more than before, not less. Local also means private: my code and issues never leave the machine. And it was never only about money: it was also an exercise in understanding AI better. Making a model fit taught me how these models actually use memory, from quantisation to the KV cache, in a way that calling an API never did.
+For me, yes, and mostly because of cost rather than speed. I have an app of my own, issue-worm, that works through a project's issues one at a time and fixes them. On DeepSeek I rationed it. My worst normal days cost about £2, and a single chat that went into a tailspin could cost £6 on its own. The hardware cost about £1,000: around £600 for the card, and the rest for the enclosure and power supply. At £2 a day, the £6 tailspins aside, it pays for itself in about 500 days, well over a year. That's the best case: on a typical day I spent less, and the electricity isn't free. On the other hand, DeepSeek has been raising its prices, so the sums tip further towards running locally over time.
+
+But that sum misses the point. Running locally, I can leave it working all the time without watching the meter, so I expect to use it more than before, not less. Local also means private: my code and issues never leave the machine.
+
+And it was never only about money: it was also an exercise in understanding AI better. Making a model fit taught me how these models actually use memory, from quantisation to the KV cache, in a way that calling an API never did.
 
 Is it as good as DeepSeek? It's too early to say: I've only just got it working, and it's still bedding in. It can only work on one issue at a time, and it seems slightly slower per issue, but I can leave it alone to work through hundreds of issues without running up a bill. I haven't run it long enough to compare how many it fixes, or how often it gets stuck in loops. The hardest issues still go to Claude.
-
-People worry that USB4 is too slow for an external card. I haven't measured it, but once a model is loaded very little data crosses the cable; what matters is getting the whole model into graphics memory, and that's what the second card buys you.
 
 But it is a hobbyist project, and if you try it, 
 the three things I'd tell you are:
