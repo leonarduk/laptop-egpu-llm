@@ -84,18 +84,31 @@ Getting Windows to see both cards turned out to be only half the battle. I dropp
 
 Left to itself, Ollama still put a 14B coding model mostly on one card and spilled the rest into normal memory: 14 tokens a second. One setting, `OLLAMA_SCHED_SPREAD=1`, told it to spread the model across both cards, and it jumped to 38 tokens a second. Weeks of driver work, and then one environment variable nearly tripled the speed.
 
-Two more settings, `OLLAMA_FLASH_ATTENTION=1` and `OLLAMA_KV_CACHE_TYPE=q4_0`, and I'm running a 27B model with room for a 216,000-token context, entirely on the graphics cards, at about 25 tokens a second. On a laptop. Next to a big ugly black box.
+## The memory you don't see: the KV cache
 
-It isn't perfect. A 32B coding model still doesn't quite fit: 92% on the cards, at 13 tokens a second. And I had to unplug two of my three external monitors while the model runs, because with all three connected I got constant display resets and flickering.
+The download size of a model is not what it needs to run. On top of the weights, every model needs a KV cache: its working memory for the conversation, holding everything it has read so far. The cache grows with the context length, and Ollama reserves the full amount the moment the model loads, whether you use it or not. My 27B model is 11.3 GB of weights, but at a 216,000-token context its KV cache adds roughly another 8 GB.
+
+That's why the 32B coding model didn't fit at first. The KV cache pushed it over, not the weights. The fix is to store the cache at lower precision. Turn on flash attention (`OLLAMA_FLASH_ATTENTION=1`, which the next setting needs), then `OLLAMA_KV_CACHE_TYPE=q8_0` roughly halves the cache for a negligible quality cost, and `q4_0` quarters it. On the 32B model that took it from 72% on the cards at 7.8 tokens a second, to 83% at 10.3, to 92% at 13.2.
+
+### More than one chat
+
+The cache is per conversation. Every chat the model is answering at the same time gets its own full-size KV cache. When I tried LM Studio, its log showed four parallel slots, each reserving a full context, so it was setting aside four times the memory I thought I needed. Unless you genuinely have several chats or tools hitting the model at the same moment, set parallel slots to 1 (`OLLAMA_NUM_PARALLEL=1` in Ollama) and the cache shrinks accordingly.
+
+The same goes for running different models side by side, say a coding model in one chat and a general one in another. Each loaded model needs its own weights and its own cache, and they all have to share the same 24 GB.
+
+With all three settings on, I'm running a 27B model with room for a 216,000-token context, entirely on the graphics cards, at about 25 tokens a second. On a laptop. Next to a big ugly black box.
+
+It isn't perfect. Even with the smaller cache, the 32B coding model still only gets 92% onto the cards. And I had to unplug two of my three external monitors while the model runs, because with all three connected I got constant display resets and flickering.
 
 ## Was it worth it?
 
 For inference, yes. People worry that USB4 is too slow for an external card, but the way these tools split a model across cards, very little data has to cross the cable. What matters is getting the whole model into graphics memory, and that's exactly what the second card buys you.
 
-But it is a hobbyist project, and if you try it, the two things I'd tell you are:
+But it is a hobbyist project, and if you try it, the three things I'd tell you are:
 
 - **If only one NVIDIA card works at a time, check the driver versions first.** Then stop Windows Update from installing drivers, or it will do it again.
 - **Boot with the enclosure attached, and use Restart, not Shut down.**
+- **Budget for the KV cache, not just the model's download size.** Quantise it, and keep parallel chats to what you actually use.
 
 Everything I left out, from the exact commands and logs to the diagnostic scripts and the full benchmark numbers, is in the repo: [laptop-egpu-llm on GitHub](https://github.com/leonarduk/laptop-egpu-llm).
 
