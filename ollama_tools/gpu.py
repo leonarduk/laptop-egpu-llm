@@ -60,9 +60,15 @@ class Gpu:
 def parse_nvidia_smi(output: str) -> list[Gpu]:
     """Parse ``--query-gpu=index,name,memory.total,memory.free`` CSV rows.
 
-    Values are MiB, as ``--format=csv,noheader,nounits`` emits them. Rows
-    that do not parse are skipped rather than raising: one malformed line
-    should not hide the cards that did report.
+    Values are MiB, as ``--format=csv,noheader,nounits`` emits them. A row
+    that does not parse -- including ``[N/A]`` for memory, which a card in
+    a bad state reports -- raises rather than being skipped. Skipping is not
+    the cautious choice it looks like: the conservative budget is the card
+    count times the *smallest* card, so dropping a small card that failed
+    to report can make the budget larger, not smaller.
+
+    Raises:
+        GpuUnavailable: a non-blank row could not be parsed.
     """
     gpus: list[Gpu] = []
     for line in output.splitlines():
@@ -70,9 +76,9 @@ def parse_nvidia_smi(output: str) -> list[Gpu]:
         if not line:
             continue
         fields = [f.strip() for f in line.split(",")]
-        if len(fields) < 4:
-            continue
         try:
+            if len(fields) < 4:
+                raise ValueError(f"expected 4 fields, got {len(fields)}")
             gpus.append(
                 Gpu(
                     index=int(fields[0]),
@@ -81,8 +87,12 @@ def parse_nvidia_smi(output: str) -> list[Gpu]:
                     free_bytes=int(float(fields[3])) * 1024 * 1024,
                 )
             )
-        except ValueError:
-            continue
+        except ValueError as exc:
+            raise GpuUnavailable(
+                f"nvidia-smi returned a GPU row that could not be read ({line!r}: {exc}); "
+                "a card that cannot report its free memory cannot be budgeted, and "
+                "leaving it out could overstate what the others can hold"
+            ) from exc
     return gpus
 
 

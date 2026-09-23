@@ -16,6 +16,17 @@ ONE_CARD = [Gpu(0, "RTX 5070 Laptop", 8151 * MIB, 7700 * MIB)]
 SEVEN_B = int(4.36 * GIB)
 TWENTY_SEVEN_B = int(11.29 * GIB)
 
+# The real pair, as nvidia-smi reports it with nothing loaded.
+LAPTOP_8GB = Gpu(0, "RTX 5070 Laptop", 8151 * MIB, 7700 * MIB)
+EGPU_16GB = Gpu(1, "RTX 5060 Ti", 16311 * MIB, 15600 * MIB)
+
+OLLAMA_ENV = (
+    "OLLAMA_KV_CACHE_TYPE",
+    "OLLAMA_FLASH_ATTENTION",
+    "OLLAMA_NUM_PARALLEL",
+    "OLLAMA_CONTEXT_LENGTH",
+)
+
 
 class StubClient:
     def __init__(
@@ -26,8 +37,14 @@ class StubClient:
         capabilities=None,
         generate=None,
         ps_error_after=None,
+        show=None,
     ):
         self._sizes = sizes or {}
+        # /api/show payloads by model name. Absent means an empty payload,
+        # which carries no architecture: the fit check falls back to file
+        # size plus headroom, as it did before the KV estimate existed.
+        self._show = show or {}
+        self.show_calls = []
         self._loaded = loaded or []
         self._ps_error = ps_error
         # `stop` reads resident state twice - once to decide what to unload,
@@ -58,6 +75,13 @@ class StubClient:
     def capabilities(self, model):
         return self._capabilities
 
+    def show(self, model):
+        self.show_calls.append(model)
+        payload = self._show.get(model, {})
+        if isinstance(payload, Exception):
+            raise payload
+        return payload
+
     def generate(self, model, prompt, num_predict, timeout=600):
         return self._generate
 
@@ -71,6 +95,11 @@ class StubClient:
 @pytest.fixture
 def wire(monkeypatch):
     """Point the CLI at a stub client and a fixed GPU inventory."""
+
+    # The KV estimate reads these from the environment; the machine the
+    # tests run on (this one sets q4_0) must not change the arithmetic.
+    for var in OLLAMA_ENV:
+        monkeypatch.delenv(var, raising=False)
 
     def _wire(client, gpus=None):
         monkeypatch.setattr(cli, "query_gpus", lambda: list(gpus or ONE_CARD))
@@ -92,6 +121,120 @@ def test_model_that_fits_exits_zero(wire):
 def test_model_that_does_not_fit_exits_one(wire):
     wire(StubClient({"qwen3.8-64k:latest": TWENTY_SEVEN_B}))
     assert run(["fit", "qwen3.8-64k:latest"]) == cli.DOES_NOT_FIT
+
+
+def test_fit_shows_the_kv_cache_as_its_own_component(wire, capsys, monkeypatch, qwen35_show):
+    """qwen3.8-100k on the real pair: 16.2 GiB of weights + 20% + the
+    measured 1759.5 MiB cache. The cache is what the old file-size check
+    could not see."""
+    monkeypatch.setenv("OLLAMA_KV_CACHE_TYPE", "q4_0")
+    monkeypatch.setenv("OLLAMA_FLASH_ATTENTION", "1")
+    weights = int(16.2 * GIB)
+    wire(
+        StubClient({"qwen3.8-100k:latest": weights}, show={"qwen3.8-100k:latest": qwen35_show}),
+        gpus=[LAPTOP_8GB, EGPU_16GB],
+    )
+    assert run(["fit", "qwen3.8-100k", "--strategy", "proportional"]) == cli.OK
+    out = capsys.readouterr().out
+    assert "OLLAMA_KV_CACHE_TYPE=q4_0" in out
+    assert "assumes the Ollama server was started with the same settings" in out
+    assert "16.20 GiB + 20% + KV  1.72 GiB =  21.16 GiB  fits" in out
+    assert "KV: q4_0, num_ctx 100000 (Modelfile), 16 of 64 layers, 1 slot(s)" in out
+
+
+def test_the_kv_cache_can_be_what_tips_a_model_over(wire, monkeypatch, qwen35_show):
+    """Same model, same budget, f16 cache: 1759.5 MiB becomes ~6.1 GiB,
+    and the file-size-only check would have said it fits (10 GiB + 20%
+    against the ~15.0 GiB conservative budget)."""
+    weights = int(10.0 * GIB)
+    client = StubClient({"qwen3.8-100k:latest": weights}, show={"qwen3.8-100k:latest": qwen35_show})
+    wire(client, gpus=[LAPTOP_8GB, EGPU_16GB])
+    monkeypatch.setenv("OLLAMA_KV_CACHE_TYPE", "q4_0")
+    assert run(["fit", "qwen3.8-100k"]) == cli.OK
+    monkeypatch.setenv("OLLAMA_KV_CACHE_TYPE", "f16")
+    assert run(["fit", "qwen3.8-100k"]) == cli.DOES_NOT_FIT
+
+
+def test_fit_falls_back_to_file_size_and_says_so_when_show_fails(wire, capsys):
+    wire(StubClient({"m:latest": SEVEN_B}, show={"m:latest": OllamaUnavailable("500 boom")}))
+    assert run(["fit", "m"]) == cli.OK
+    out = capsys.readouterr().out
+    assert "KV not estimated (/api/show failed: 500 boom); file size + 20% only" in out
+    assert "KV     ?" in out
+
+
+def test_fit_falls_back_when_show_hits_a_connection_error(wire, capsys, monkeypatch):
+    """Through the real client, so the URLError -> OllamaUnavailable
+    translation is exercised rather than assumed: /api/tags answers, then
+    the server goes away before /api/show."""
+    import urllib.error
+
+    from ollama_tools.client import OllamaClient
+
+    class TagsOnly(OllamaClient):
+        def list_models(self):
+            return [ModelInfo("m:latest", SEVEN_B)]
+
+    def refuse(request, timeout=None):
+        raise urllib.error.URLError("[WinError 10061] connection refused")
+
+    monkeypatch.setattr("ollama_tools.client.urllib.request.urlopen", refuse)
+    wire(TagsOnly())
+    assert run(["fit", "m"]) == cli.OK
+    out = capsys.readouterr().out
+    assert "KV not estimated (/api/show failed:" in out
+    assert "connection refused" in out
+
+
+def test_fit_falls_back_when_show_carries_a_malformed_value(wire, capsys, qwen35_show):
+    qwen35_show["model_info"]["qwen35.attention.head_count_kv"] = 4.5
+    wire(StubClient({"m:latest": SEVEN_B}, show={"m:latest": qwen35_show}))
+    assert run(["fit", "m"]) == cli.OK
+    assert "KV not estimated (qwen35.attention.head_count_kv is 4.5" in capsys.readouterr().out
+
+
+def test_fit_falls_back_when_show_lacks_the_architecture(wire, capsys):
+    wire(StubClient({"m:latest": SEVEN_B}))
+    assert run(["fit", "m"]) == cli.OK
+    assert "KV not estimated (/api/show returned no model_info)" in capsys.readouterr().out
+
+
+def test_a_tagless_name_finds_the_latest_tag(wire, capsys):
+    """/api/tags only lists `name:latest`; `fit qwen3.8-216k` used to
+    report a pulled model as not pulled."""
+    client = wire(StubClient({"qwen3.8-216k:latest": SEVEN_B}))
+    assert run(["fit", "qwen3.8-216k"]) == cli.OK
+    out = capsys.readouterr().out
+    assert "not pulled" not in out
+    assert client.show_calls == ["qwen3.8-216k:latest"]
+
+
+def test_a_tagless_name_matches_a_resident_model_for_stop(wire, capsys):
+    wire(StubClient(loaded=[LoadedModel("qwen3.8-216k:latest", 1000, 1000)]))
+    assert run(["stop", "qwen3.8-216k"]) == cli.OK
+    assert "Unloading qwen3.8-216k:latest" in capsys.readouterr().out
+
+
+def test_bench_finds_offload_for_a_tagless_name(wire, capsys):
+    wire(StubClient({"m:latest": SEVEN_B}, loaded=[LoadedModel("m:latest", 1000, 800)]))
+    assert run(["bench", "m"]) == cli.OK
+    assert "GPU offload: 80%" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("value", ["-10", "ten", "1.5"])
+def test_headroom_must_be_a_non_negative_whole_number(wire, capsys, value):
+    """Rejected by argparse as a usage error (exit 2), not a traceback from
+    required_bytes exiting 1 -- which reads as "does not fit"."""
+    wire(StubClient({"m:latest": SEVEN_B}))
+    with pytest.raises(SystemExit) as caught:
+        run(["fit", "m", "--headroom", value])
+    assert caught.value.code == cli.CANNOT_ANSWER
+    assert "--headroom" in capsys.readouterr().err
+
+
+def test_zero_headroom_is_allowed(wire):
+    wire(StubClient({"m:latest": SEVEN_B}))
+    assert run(["fit", "m", "--headroom", "0"]) == cli.OK
 
 
 def test_survey_reports_oversized_models_without_failing(wire):
@@ -221,18 +364,41 @@ def test_ps_with_nothing_resident(wire, capsys):
     assert "Nothing resident" in capsys.readouterr().out
 
 
+def picked(capsys):
+    """(stdout, stderr) of a picker run. stdout is the contract: the bare
+    model name and a newline, nothing else, so a script can capture it."""
+    captured = capsys.readouterr()
+    return captured.out, captured.err
+
+
 def test_coder_model_picks_7b_for_single_8gb_card(wire, capsys):
     wire(StubClient(), gpus=ONE_CARD)
     assert run(["coder-model"]) == cli.OK
-    assert "coder model: qwen2.5-coder:7b" in capsys.readouterr().out
+    out, err = picked(capsys)
+    assert out == "qwen2.5-coder:7b\n"
+    # The diagnostics are still there, just not on stdout.
+    assert "GPUs present" in err and "coder model: qwen2.5-coder:7b" in err
 
 
-def test_coder_model_picks_32b_for_both_egpus(wire, capsys):
+def test_coder_model_picks_216k_for_two_16gb_cards(wire, capsys):
     egpu = Gpu(1, "RTX 5060 Ti", 16311 * MIB, 16000 * MIB)
     twin = Gpu(2, "RTX 5060 Ti (twin)", 16311 * MIB, 16000 * MIB)
     wire(StubClient(), gpus=[egpu, twin])
     assert run(["coder-model"]) == cli.OK
-    assert "coder model: qwen2.5-coder:32b" in capsys.readouterr().out
+    assert picked(capsys)[0] == "qwen3.8-216k\n"
+
+
+def test_pickers_on_the_real_8gb_plus_16gb_pair(wire, capsys):
+    """The machine this was built for. Conservative caps the asymmetric
+    pair at 2 x 7700 MiB (~15.0 GiB), which reaches the 100k build but not
+    the 216k one; proportional sums to ~22.8 GiB and reaches both. The
+    default stays conservative -- the safe side of an unknown split."""
+    wire(StubClient(), gpus=[LAPTOP_8GB, EGPU_16GB])
+    for command in ("coder-model", "general-model"):
+        assert run([command]) == cli.OK
+        assert picked(capsys)[0] == "qwen3.8-100k\n"
+        assert run([command, "--strategy", "proportional"]) == cli.OK
+        assert picked(capsys)[0] == "qwen3.8-216k\n"
 
 
 def test_coder_model_cli_agrees_with_the_library_function(wire, capsys):
@@ -241,19 +407,10 @@ def test_coder_model_cli_agrees_with_the_library_function(wire, capsys):
     from ollama_tools.coder_model import get_coder_model
     from ollama_tools.gpu import CONSERVATIVE
 
-    gpus = [Gpu(0, "RTX 5070 Laptop", 8151 * MIB, 7700 * MIB), Gpu(1, "RTX 5060 Ti", 16311 * MIB, 16000 * MIB)]
+    gpus = [LAPTOP_8GB, EGPU_16GB]
     wire(StubClient(), gpus=gpus)
     assert run(["coder-model"]) == cli.OK
-    out = capsys.readouterr().out
-    assert f"coder model: {get_coder_model(CONSERVATIVE, gpus)}" in out
-
-
-def test_coder_model_accepts_proportional_strategy(wire, capsys):
-    gpus = [Gpu(0, "RTX 5070 Laptop", 8151 * MIB, 7700 * MIB), Gpu(1, "RTX 5060 Ti", 16311 * MIB, 16000 * MIB)]
-    wire(StubClient(), gpus=gpus)
-    assert run(["coder-model", "--strategy", "proportional"]) == cli.OK
-    # 7700 + 16000 MiB free, proportional sum clears the 18 GiB top tier.
-    assert "coder model: qwen2.5-coder:32b" in capsys.readouterr().out
+    assert picked(capsys)[0] == f"{get_coder_model(CONSERVATIVE, gpus)}\n"
 
 
 def test_coder_model_falls_back_when_gpu_unavailable(monkeypatch, capsys):
@@ -262,21 +419,25 @@ def test_coder_model_falls_back_when_gpu_unavailable(monkeypatch, capsys):
 
     monkeypatch.setattr(cli, "query_gpus", raise_unavailable)
     assert run(["coder-model"]) == cli.OK
-    assert "qwen2.5-coder:0.5b" in capsys.readouterr().out
+    out, err = picked(capsys)
+    assert out == "qwen2.5-coder:0.5b\n"
+    assert "nvidia-smi not found" in err
 
 
 def test_general_model_picks_9b_for_single_8gb_card(wire, capsys):
     wire(StubClient(), gpus=ONE_CARD)
     assert run(["general-model"]) == cli.OK
-    assert "general model: qwen3.5:9b" in capsys.readouterr().out
+    out, err = picked(capsys)
+    assert out == "qwen3.5:9b\n"
+    assert "general model: qwen3.5:9b" in err
 
 
-def test_general_model_picks_qwen3_216k_for_both_egpus(wire, capsys):
+def test_general_model_picks_qwen3_216k_for_two_16gb_cards(wire, capsys):
     egpu = Gpu(1, "RTX 5060 Ti", 16311 * MIB, 16000 * MIB)
     twin = Gpu(2, "RTX 5060 Ti (twin)", 16311 * MIB, 16000 * MIB)
     wire(StubClient(), gpus=[egpu, twin])
     assert run(["general-model"]) == cli.OK
-    assert "general model: qwen3.8-216k" in capsys.readouterr().out
+    assert picked(capsys)[0] == "qwen3.8-216k\n"
 
 
 def test_general_model_falls_back_when_gpu_unavailable(monkeypatch, capsys):
@@ -285,7 +446,7 @@ def test_general_model_falls_back_when_gpu_unavailable(monkeypatch, capsys):
 
     monkeypatch.setattr(cli, "query_gpus", raise_unavailable)
     assert run(["general-model"]) == cli.OK
-    assert "gemma3:4b" in capsys.readouterr().out
+    assert picked(capsys)[0] == "gemma3:4b\n"
 
 
 def test_general_model_cli_agrees_with_the_library_function(wire, capsys):
@@ -294,19 +455,10 @@ def test_general_model_cli_agrees_with_the_library_function(wire, capsys):
     from ollama_tools.general_model import get_general_model
     from ollama_tools.gpu import CONSERVATIVE
 
-    gpus = [Gpu(0, "RTX 5070 Laptop", 8151 * MIB, 7700 * MIB), Gpu(1, "RTX 5060 Ti", 16311 * MIB, 16000 * MIB)]
+    gpus = [LAPTOP_8GB, EGPU_16GB]
     wire(StubClient(), gpus=gpus)
     assert run(["general-model"]) == cli.OK
-    out = capsys.readouterr().out
-    assert f"general model: {get_general_model(CONSERVATIVE, gpus)}" in out
-
-
-def test_general_model_accepts_proportional_strategy(wire, capsys):
-    gpus = [Gpu(0, "RTX 5070 Laptop", 8151 * MIB, 7700 * MIB), Gpu(1, "RTX 5060 Ti", 16311 * MIB, 16000 * MIB)]
-    wire(StubClient(), gpus=gpus)
-    assert run(["general-model", "--strategy", "proportional"]) == cli.OK
-    # 7700 + 16000 MiB free, proportional sum clears the 18 GiB top tier.
-    assert "general model: qwen3.8-216k" in capsys.readouterr().out
+    assert picked(capsys)[0] == f"{get_general_model(CONSERVATIVE, gpus)}\n"
 
 
 def test_endpoint_is_accepted_after_the_subcommand(wire):

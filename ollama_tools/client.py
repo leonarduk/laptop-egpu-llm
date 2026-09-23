@@ -6,12 +6,32 @@ nothing installed but Python, and everything needed is one JSON POST.
 
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
 DEFAULT_ENDPOINT = "http://localhost:11434"
+DEFAULT_TAG = "latest"
+
+
+def normalise_model_name(name: str) -> str:
+    """``name`` as /api/tags and /api/ps spell it: with a tag.
+
+    Ollama resolves ``qwen3.8-216k`` to ``qwen3.8-216k:latest`` when asked
+    to run it, but lists it only under the tagged name, so a bare lookup
+    against either listing misses a model that is plainly pulled. Only the
+    last path segment is inspected, because a registry prefix can carry a
+    port (``host:5000/ns/model``) whose colon is not a tag.
+    """
+    name = name.strip()
+    if not name:
+        return name
+    last = name.rsplit("/", 1)[-1]
+    if ":" in last:
+        return name
+    return f"{name}:{DEFAULT_TAG}"
 
 
 class OllamaUnavailable(RuntimeError):
@@ -72,7 +92,15 @@ class OllamaClient:
             detail = exc.read().decode("utf-8", "replace").strip()
             raise OllamaUnavailable(f"{url} returned {exc.code}: {detail}") from exc
         except (urllib.error.URLError, OSError) as exc:
+            # URLError covers refused/unresolvable; OSError covers the rest of
+            # the transport, including socket.timeout and ConnectionError.
             raise OllamaUnavailable(f"{url} unreachable: {exc}") from exc
+        except http.client.HTTPException as exc:
+            # Not an OSError: a server that drops mid-body raises
+            # IncompleteRead, a garbled status line BadStatusLine.
+            raise OllamaUnavailable(f"{url} broke off the response: {exc!r}") from exc
+        except UnicodeDecodeError as exc:
+            raise OllamaUnavailable(f"{url} returned a body that is not UTF-8: {exc}") from exc
 
         try:
             parsed = json.loads(body)
@@ -113,9 +141,14 @@ class OllamaClient:
         ``generate`` endpoint at all, and guessing from "embed" appearing
         in a name would be wrong in both directions.
         """
-        payload = self._request("/api/show", {"model": model}, timeout=20)
-        caps = payload.get("capabilities")
+        caps = self.show(model).get("capabilities")
         return [str(c) for c in caps] if isinstance(caps, list) else []
+
+    def show(self, model: str) -> dict:
+        """The raw ``POST /api/show`` payload: ``capabilities``, the
+        ``parameters`` string a Modelfile set, and ``model_info`` with the
+        GGUF architecture keys the KV-cache estimate in ``fit`` reads."""
+        return self._request("/api/show", {"model": model}, timeout=20)
 
     def generate(self, model: str, prompt: str, num_predict: int, timeout: float = 600) -> dict:
         return self._request(
