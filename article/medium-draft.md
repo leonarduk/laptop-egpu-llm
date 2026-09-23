@@ -1,4 +1,4 @@
-# How I turn a laptop into a desktop in my pursuit of a usable Local LLM
+# How I triple the graphics memory on my laptop in my pursuit of a usable Local LLM
 
 Like many, I love Claude Code. I also keep running out of tokens. 
 Even on Claude Max I am burning through my tokens quickly, 
@@ -22,6 +22,8 @@ ugly black box and a big enough desk. Buy an RTX 5060 Ti
 with 16 GB, put it in a Razer Core X V2 enclosure, 
 plug it into the laptop over USB4, and use both cards 
 together: 8 + 16 = 24 GB. One better than the article.
+
+<!-- Photo: the setup. Caption: "Big ugly box on left hand side, two monitors off to save GPU, and Kun working on an issue with my local LLM" -->
 
 Spoiler: I got there. But I'll say up front that it was
 hard, and in hindsight this is for hobbyists only. Maybe better
@@ -241,9 +243,9 @@ now is the 27B for real work, with 7B and 14B Qwen coders
 for quick jobs. The full list of what I tried, and why,
 is in the repo.
 
-It isn't perfect, though. I had to unplug two of my 
-three external monitors while the model runs, because 
-with all three connected I got constant display 
+It isn't perfect, though. I had to turn off two of my 
+three external monitors while the model runs, to save GPU. 
+With all three connected I got constant display 
 resets and flickering.
 
 ## Was it worth it?
@@ -265,4 +267,3 @@ Everything I left out, from the exact commands and logs to
 the diagnostic scripts and the full benchmark numbers, is 
 in the repo: [laptop-egpu-llm on GitHub](https://github.com/leonarduk/laptop-egpu-llm).
 
-<!-- Image: screenshot showing both GPUs detected (the current Medium draft uses an LM Studio screenshot; consider a Kun Desktop one). -->
