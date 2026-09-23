@@ -15,7 +15,7 @@
 
       HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate
           ExcludeWUDriversInQualityUpdate = 1
-          The Group Policy "Do not include drivers with Windows Update".
+          The Group Policy "Do not include drivers with Windows Updates".
           Works on Home editions too, which have no gpedit.msc.
 
       HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\DriverSearching
@@ -32,8 +32,10 @@
     Set both values. Asks for confirmation; -WhatIf shows what would change.
 
 .PARAMETER Undo
-    Remove the policy value and set SearchOrderConfig back to 1 (Windows' default),
-    letting Windows Update deliver drivers again.
+    Put both values back as they were before -Apply (saved by -Apply in
+    %ProgramData%\laptop-egpu-llm\wu-driver-settings.json), letting Windows Update
+    deliver drivers again. With no saved copy it removes the policy value and sets
+    SearchOrderConfig to 1, Windows' usual default.
 
 .EXAMPLE
     .\Disable-WindowsUpdateDrivers.ps1            # show the current state
@@ -56,6 +58,19 @@ $policyKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
 $policyName = 'ExcludeWUDriversInQualityUpdate'
 $searchKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DriverSearching'
 $searchName = 'SearchOrderConfig'
+$backupFile = Join-Path $env:ProgramData 'laptop-egpu-llm\wu-driver-settings.json'
+
+function Set-OrRemove {
+    <# Restore one value: $null means it did not exist, so remove it. #>
+    param([string]$Key, [string]$Name, $Value)
+    if ($null -eq $Value) {
+        Remove-ItemProperty -Path $Key -Name $Name -ErrorAction SilentlyContinue
+    }
+    else {
+        if (-not (Test-Path $Key)) { New-Item -Path $Key -Force | Out-Null }
+        New-ItemProperty -Path $Key -Name $Name -PropertyType DWord -Value ([int]$Value) -Force | Out-Null
+    }
+}
 
 function Get-Value {
     param([string]$Key, [string]$Name)
@@ -91,17 +106,50 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 
 if ($Apply) {
     if ($PSCmdlet.ShouldProcess('Windows Update', 'Stop installing device drivers')) {
+        # Remember the original values once, so -Undo restores them rather than
+        # guessing. A second -Apply must not overwrite the first backup.
+        if (-not (Test-Path $backupFile)) {
+            New-Item -ItemType Directory -Force -Path (Split-Path $backupFile) | Out-Null
+            [pscustomobject]@{
+                ExcludeWUDriversInQualityUpdate = Get-Value $policyKey $policyName
+                SearchOrderConfig               = Get-Value $searchKey $searchName
+                PolicyKeyExisted                = [bool](Test-Path $policyKey)
+            } | ConvertTo-Json | Set-Content -Path $backupFile -Encoding UTF8
+            Write-Host "Saved the previous values to $backupFile"
+        }
         if (-not (Test-Path $policyKey)) { New-Item -Path $policyKey -Force | Out-Null }
         New-ItemProperty -Path $policyKey -Name $policyName -PropertyType DWord -Value 1 -Force | Out-Null
         if (-not (Test-Path $searchKey)) { New-Item -Path $searchKey -Force | Out-Null }
         New-ItemProperty -Path $searchKey -Name $searchName -PropertyType DWord -Value 0 -Force | Out-Null
     }
+    else {
+        if (-not $WhatIfPreference) { Write-Host 'Aborted - nothing changed.' }
+        return
+    }
 }
 elseif ($Undo) {
     if ($PSCmdlet.ShouldProcess('Windows Update', 'Allow installing device drivers again')) {
-        Remove-ItemProperty -Path $policyKey -Name $policyName -ErrorAction SilentlyContinue
-        if (-not (Test-Path $searchKey)) { New-Item -Path $searchKey -Force | Out-Null }
-        New-ItemProperty -Path $searchKey -Name $searchName -PropertyType DWord -Value 1 -Force | Out-Null
+        if (Test-Path $backupFile) {
+            $saved = Get-Content $backupFile -Raw | ConvertFrom-Json
+            Set-OrRemove $policyKey $policyName $saved.ExcludeWUDriversInQualityUpdate
+            Set-OrRemove $searchKey $searchName $saved.SearchOrderConfig
+            # Remove the policy key only if -Apply created it and it is now empty.
+            if (-not $saved.PolicyKeyExisted -and (Test-Path $policyKey)) {
+                $key = Get-Item $policyKey
+                if ($key.ValueCount -eq 0 -and $key.SubKeyCount -eq 0) { Remove-Item $policyKey }
+            }
+            Remove-Item $backupFile
+            Write-Host "Restored the values saved in $backupFile"
+        }
+        else {
+            Write-Warning "No saved values at $backupFile; setting Windows' usual defaults instead."
+            Remove-ItemProperty -Path $policyKey -Name $policyName -ErrorAction SilentlyContinue
+            Set-OrRemove $searchKey $searchName 1
+        }
+    }
+    else {
+        if (-not $WhatIfPreference) { Write-Host 'Aborted - nothing changed.' }
+        return
     }
 }
 

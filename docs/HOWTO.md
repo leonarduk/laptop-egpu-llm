@@ -58,7 +58,7 @@ driver, and only one card will work (step 6 explains why).
 .\diagnostics\Disable-WindowsUpdateDrivers.ps1 -Apply     # elevated: stop driver updates
 ```
 
-It sets the Group Policy *Do not include drivers with Windows Update*
+It sets the Group Policy *Do not include drivers with Windows Updates*
 (`ExcludeWUDriversInQualityUpdate` = 1, which also works on Home editions) and the device
 installation setting to never fetch drivers from Windows Update. `-Undo` reverts both.
 On this machine, Windows Update installed the mismatched desktop driver 16 minutes after

@@ -67,6 +67,10 @@
 .NOTES
     Run elevated for the install. Afterwards: restart with the enclosure attached,
     then run Test-DriverConflict.ps1 (expect exit code 0).
+
+    The leftover-package report reads 'pnputil /enum-drivers', whose field names
+    are localised; it matches the English ones. On other languages it finds no
+    packages and says so, rather than claiming the store is clean.
 #>
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
 param(
@@ -147,7 +151,10 @@ function Find-InfForDevice {
         return [pscustomobject]@{ Match = 'exact'; Inf = @($exact | ForEach-Object Name) }
     }
     $generic = @($infs | Where-Object {
-            Select-String -Path $_.FullName -Pattern "DEV_$Dev(?!&SUBSYS)" -Quiet
+            # The id must end here: not followed by another hex digit (DEV_2D04 is
+            # not DEV_2D040) and not by &SUBSYS (that is an exact entry for some
+            # other maker's board).
+            Select-String -Path $_.FullName -Pattern "DEV_$Dev(?![0-9A-Fa-f])(?!&SUBSYS)" -Quiet
         })
     return [pscustomobject]@{ Match = 'generic'; Inf = @($generic | ForEach-Object Name) }
 }
@@ -212,8 +219,14 @@ if (-not $DisplayDriverPath) {
             Write-Host "Downloading $url"
             Write-Host '(about 1 GB)'
             $ProgressPreference = 'SilentlyContinue'   # the progress bar makes Invoke-WebRequest crawl
-            Invoke-WebRequest -Uri $url -OutFile "$InstallerPath.partial" -UseBasicParsing
-            Move-Item "$InstallerPath.partial" $InstallerPath
+            try {
+                Invoke-WebRequest -Uri $url -OutFile "$InstallerPath.partial" -UseBasicParsing
+                Move-Item "$InstallerPath.partial" $InstallerPath
+            }
+            catch {
+                Remove-Item "$InstallerPath.partial" -ErrorAction SilentlyContinue
+                throw "Download of $url failed: $($_.Exception.Message)"
+            }
         }
     }
 
@@ -299,13 +312,29 @@ if ($PSCmdlet.ShouldProcess(($chosen -join ', '), "Install NVIDIA driver $Versio
 elseif ($WhatIfPreference) {
     & $installer -DisplayDriverPath $DisplayDriverPath -Inf $chosen -Force:$Force -WhatIf
 }
+else {
+    Write-Host 'Aborted - nothing installed.'
+    return
+}
 
 # --- what is left in the store --------------------------------------------
-$stale = @(Get-NvidiaDisplayPackage | Where-Object {
-        $v = ($_.'Driver Version' -split '\s+')[-1]
-        (ConvertTo-NvidiaMarketingVersion $v) -ne $Version
-    })
+$packages = @(Get-NvidiaDisplayPackage)
+$stale = @()
+$unreadable = @()
+foreach ($p in $packages) {
+    $v = ($p.'Driver Version' -split '\s+')[-1]
+    $marketing = if ($v) { ConvertTo-NvidiaMarketingVersion $v } else { $null }
+    if (-not $marketing) { $unreadable += $p }
+    elseif ($marketing -ne $Version) { $stale += $p }
+}
 Write-Host ''
+if ($packages.Count -eq 0) {
+    Write-Host 'Could not list NVIDIA packages from pnputil (non-English Windows?). Check by hand:' -ForegroundColor Yellow
+    Write-Host '  pnputil /enum-drivers /class Display'
+}
+foreach ($p in $unreadable) {
+    Write-Host ("Could not read the version of {0} ({1}); check it by hand." -f $p.'Published Name', $p.'Original Name') -ForegroundColor Yellow
+}
 if ($stale.Count -gt 0) {
     Write-Host 'Other NVIDIA display packages still in the driver store:' -ForegroundColor Yellow
     foreach ($p in $stale) {
@@ -316,7 +345,7 @@ if ($stale.Count -gt 0) {
     Write-Host '  pnputil /delete-driver <published name> /uninstall'
     Write-Host 'Windows can re-bind a card to a leftover older package, so do not leave them.'
 }
-else {
+elseif ($packages.Count -gt 0) {
     Write-Host "No other NVIDIA display packages in the driver store."
 }
 Write-Host ''

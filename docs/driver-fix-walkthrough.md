@@ -298,7 +298,7 @@ Intel(R) Graphics                   OK   CM_PROB_NONE   32.0.101.6737  oem123.in
 
 - **Stop Windows Update delivering drivers**, or it will reinstall a mismatched package.
   Group Policy: *Computer Configuration → Administrative Templates → Windows Components →
-  Windows Update → Do not include drivers with Windows Update → Enabled*.
+  Windows Update → Do not include drivers with Windows Updates → Enabled*.
 - **Always cold boot (Restart) with the enclosure attached.** Hot-plug gives Code 12.
 - **Update drivers with `nvlddmkm` unloaded**, using `pnputil` rather than NVIDIA's installer.
   See [`Install-NvidiaDriver.ps1`](../diagnostics/Install-NvidiaDriver.ps1).
