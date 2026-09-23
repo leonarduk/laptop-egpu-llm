@@ -236,7 +236,8 @@ if (-not $DisplayDriverPath) {
     # Only ever install what NVIDIA signed.
     $sig = Get-AuthenticodeSignature -FilePath $InstallerPath
     $signer = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { '' }
-    if ($sig.Status -ne 'Valid' -or $signer -notmatch 'O=NVIDIA Corporation') {
+    # Exact O= field, not a substring: 'O=NVIDIA Corporation Evil' must not pass.
+    if ($sig.Status -ne 'Valid' -or $signer -notmatch '(^|,\s*)O="?NVIDIA Corporation"?(,|$)') {
         throw "Refusing $InstallerPath - signature status '$($sig.Status)', signer '$signer'. Delete it and download again."
     }
     Write-Host "Signature OK: $signer"
