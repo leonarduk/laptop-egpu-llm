@@ -9,8 +9,10 @@ the eGPU is attached and how the runtime splits across cards.
 | Both cards, even split | **~15.9 GB** | Both attached, runtime splitting evenly — `2 x 7.93` |
 | Both cards, proportional | **~23.8 GB** | Both attached, runtime placing in proportion to free memory |
 
-Units: `ollama` and `nvidia-smi` report decimal GB/MiB, the `ollama-tools` CLI and
-its tier tables use GiB (1 GiB = 1.074 GB). `qwen3.8-216k` at 19.29 GB is 17.97 GiB.
+Units: `ollama` reports decimal GB, `nvidia-smi` reports MiB (binary), and the
+`ollama-tools` CLI and its tier tables use GiB (1 GiB = 1024 MiB = 1.074 GB). The GB
+figures in this doc are decimal: the even-split ~15.9 GB is ~14.8 GiB, and
+`qwen3.8-216k` at 19.29 GB is 17.97 GiB.
 
 The middle row is the trap. An even split caps you at twice the *smaller*
 card however big the other one is, so the 16 GB card sits half empty — see
@@ -75,7 +77,7 @@ once headroom is counted.
 | Job | Size to aim for | On this machine |
 |---|---|---|
 | Coder | 14B at Q4 | `qwen2.5-coder:14b` (8.37 GB) |
-| General | 27B at IQ3, *reduced context* | `qwen3.8-100k` (~15 GB total with a `q4_0` KV cache, measured 100% GPU) |
+| General | 27B at IQ3, *reduced context* | `qwen3.8-100k` (~15 GB total with a `q4_0` KV cache, measured 100% GPU under Ollama). **Tight**: well under the 15-20% headroom rule, so only if nothing else is using the cards |
 
 A model's KV cache is reserved for its manifest's `num_ctx` on every load,
 whether or not a given prompt is anywhere near that long — see

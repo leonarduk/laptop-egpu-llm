@@ -1,7 +1,8 @@
 # Making Ollama actually use both GPUs
 
-`ollama-tools fit` says a model fits by checking its size against a VRAM budget: by
-default the even-split ceiling, or the sum of free VRAM across both cards with
+`ollama-tools fit` says a model fits by checking its size (weights plus headroom plus
+an estimate of the KV cache for its `num_ctx`) against a VRAM budget: by default the
+even-split ceiling, or the sum of free VRAM across both cards with
 `--strategy proportional`. That is a budget check, not a guarantee Ollama's own scheduler will spread the model across
 both GPUs to reach it. By default it does not, and the failure mode is quiet: the
 model loads, `ollama ps` reports it resident, and it is simply slow, with the

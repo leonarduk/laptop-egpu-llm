@@ -174,7 +174,7 @@ Left to itself, Ollama loaded a 14B coding model (Qwen2.5-Coder 14B) onto just o
 
 The download size of a model is not what it needs to run. On top of the weights, every model needs a KV cache. KV stands for key-value. For every token the model reads, it works out two lists of numbers, a key and a value, that its attention step uses to look back over the conversation when choosing the next word.
 
-Take "The eGPU was slow because it was on a cheap cable." When the model reaches "it", it needs to know what "it" refers to. It compares what it is looking for against the key of every earlier word, and "eGPU" matches best, so it mixes in mostly the value of "eGPU" and very little of "slow" or "cable". The keys and values for "The", "eGPU", "was" and the rest never change, so rather than work them out again for every new word, the model keeps them. That store is the KV cache: in effect, the model's working memory for the conversation.
+Take "The eGPU was slow because it was on a cheap cable." When the model reaches "it", it needs to know what "it" refers to. It scores what it is looking for against the key of every earlier word. "eGPU" scores highest, so what it takes forward is a blend of all the values, mostly "eGPU"'s, with only a little of "slow" or "cable". The keys and values for "The", "eGPU", "was" and the rest never change, so rather than work them out again for every new word, the model keeps them. That store is the KV cache: in effect, the model's working memory for the conversation.
 
 The cache grows with the context length, and Ollama reserves the full amount the moment the model loads, whether you use it or not. My main model, a 27B Qwen 3.x squeezed down to 3-bit quantisation, is 11.3 GB of weights, but at a 216,000-token context it takes about 19 GB in total: the cache plus the working space around it.
 
@@ -191,7 +191,7 @@ These are my final Ollama settings, set as Windows user environment variables (r
 ```text
 OLLAMA_SCHED_SPREAD=1         # spread a model across both cards
 OLLAMA_FLASH_ATTENTION=1      # needed for the smaller cache
-OLLAMA_KV_CACHE_TYPE=q4_0     # quarter-size KV cache
+OLLAMA_KV_CACHE_TYPE=q4_0     # quarter-size KV cache; costs some quality, q8_0 is safer
 OLLAMA_NUM_PARALLEL=1         # one chat at a time, one cache
 ```
 
