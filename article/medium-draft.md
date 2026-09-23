@@ -106,7 +106,9 @@ The same goes for running different models side by side, say a coding model in o
 
 With all three settings on, I'm running a 27B model with room for a 216,000-token context, entirely on the graphics cards, at about 25 tokens a second. On a laptop. Next to a big ugly black box.
 
-It isn't perfect. Even with the smaller cache, the 32B coding model still only gets 92% onto the cards. And I had to unplug two of my three external monitors while the model runs, because with all three connected I got constant display resets and flickering.
+I also tried a dedicated 32B coding model, and in the end deleted it. It was stuck at a 32,000-token context, only got 92% onto the cards even with the smaller cache, and ran at half the speed of the 27B. Coding tools read whole files and long conversations, so context wins. My line-up now is the 27B for real work, with 7B and 14B Qwen coders for quick jobs. The full list of what I tried, and why, is in the repo.
+
+It isn't perfect, though. I had to unplug two of my three external monitors while the model runs, because with all three connected I got constant display resets and flickering.
 
 ## Was it worth it?
 
