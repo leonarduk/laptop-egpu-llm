@@ -288,6 +288,27 @@ def test_general_model_falls_back_when_gpu_unavailable(monkeypatch, capsys):
     assert "gemma3:4b" in capsys.readouterr().out
 
 
+def test_general_model_cli_agrees_with_the_library_function(wire, capsys):
+    """The CLI's `_describe_gpus`-derived budget and the library's
+    `budget_bytes` must not diverge -- pin them to the same output."""
+    from ollama_tools.general_model import get_general_model
+    from ollama_tools.gpu import CONSERVATIVE
+
+    gpus = [Gpu(0, "RTX 5070 Laptop", 8151 * MIB, 7700 * MIB), Gpu(1, "RTX 5060 Ti", 16311 * MIB, 16000 * MIB)]
+    wire(StubClient(), gpus=gpus)
+    assert run(["general-model"]) == cli.OK
+    out = capsys.readouterr().out
+    assert f"general model: {get_general_model(CONSERVATIVE, gpus)}" in out
+
+
+def test_general_model_accepts_proportional_strategy(wire, capsys):
+    gpus = [Gpu(0, "RTX 5070 Laptop", 8151 * MIB, 7700 * MIB), Gpu(1, "RTX 5060 Ti", 16311 * MIB, 16000 * MIB)]
+    wire(StubClient(), gpus=gpus)
+    assert run(["general-model", "--strategy", "proportional"]) == cli.OK
+    # 7700 + 16000 MiB free, proportional sum clears the 18 GiB top tier.
+    assert "general model: qwen3.8-216k" in capsys.readouterr().out
+
+
 def test_endpoint_is_accepted_after_the_subcommand(wire):
     """`ollama-tools stop --all --endpoint X` is what people type; argparse
     rejects a parent-only flag there. Both orders must work."""
