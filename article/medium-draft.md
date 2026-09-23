@@ -21,7 +21,7 @@ Or so I thought. It turns out all you need is a massive
 ugly black box and a big enough desk. Buy an RTX 5060 Ti 
 with 16 GB, put it in a Razer Core X V2 enclosure, 
 plug it into the laptop over USB4, and use both cards 
-together: 8 + 16 = 24 GB. That's 8 GB more than the article.
+together: 8 + 16 = 24 GB. That's 8 GB more than Manolo's single card.
 
 <!-- Photo: the setup. Caption: "Big ugly box on the left-hand side, two monitors off to save GPU, and Kun working on an issue with my local LLM" -->
 
@@ -186,12 +186,12 @@ The cache is per conversation: every chat a model answers at the same time gets 
 
 Then I read the Ollama log. My 27B model is a hybrid design, and Ollama "does not currently support parallel requests" for it, so the second chat just waits its turn. The rebuild wasn't wasted, though: at 100k the model takes 15 GB instead of 19 GB, leaving room for a second, smaller model alongside it. On the 32B model, which does support parallel chats, the second cache pushed 15% of the model back onto the CPU. So I've set it back to one.
 
-These are my final Ollama settings: spread a model across both cards, turn on flash attention so the cache can shrink, a quarter-size `q4_0` cache (use `q8_0` if quality suffers), and one chat at a time. I set them as Windows user environment variables from PowerShell, then restart Ollama so it picks them up:
+These are my final Ollama settings: spread a model across both cards, turn on flash attention so the cache can shrink, a quarter-size `q4_0` cache (use `q8_0` if quality suffers), and one chat at a time. I set them as Windows user environment variables from PowerShell. `setx` only affects programs started afterwards, so quit Ollama from its tray icon and start it again:
 
 ```powershell
 setx OLLAMA_SCHED_SPREAD 1
 setx OLLAMA_FLASH_ATTENTION 1
-setx OLLAMA_KV_CACHE_TYPE q4_0
+setx OLLAMA_KV_CACHE_TYPE q4_0     # q8_0 if answers get worse
 setx OLLAMA_NUM_PARALLEL 1
 ```
 
@@ -203,7 +203,7 @@ It isn't perfect, though. 8 + 16 isn't one clean 24 GB pool: the laptop's own ca
 
 ## Was it worth it?
 
-For me, yes, and mostly because of cost rather than speed. I have an app of my own, issue-worm, that works through a project's issues one at a time and fixes them. On DeepSeek I rationed it: at the worst I was spending about £2 a day, and a single chat that went into a tailspin could cost £6 on its own. The hardware cost about £1,000: around £600 for the card, and the rest for the enclosure and power supply. Against my worst DeepSeek spend of £2 a day, it pays for itself in about 500 days, well over a year. That's the best case: on a typical day I spent less, and the electricity isn't free. Against that, DeepSeek keeps raising its prices, so the sums tip further towards running locally over time. But that sum misses the point. Running locally, I can leave it working all the time without watching the meter, so I expect to use it more than before, not less. And it was never only about money: it was also an exercise in understanding AI better. Making a model fit taught me how these models actually use memory, from quantisation to the KV cache, in a way that calling an API never did.
+For me, yes, and mostly because of cost rather than speed. I have an app of my own, issue-worm, that works through a project's issues one at a time and fixes them. On DeepSeek I rationed it: at the worst I was spending about £2 a day, and a single chat that went into a tailspin could cost £6 on its own. The hardware cost about £1,000: around £600 for the card, and the rest for the enclosure and power supply. Against my worst DeepSeek spend of £2 a day, it pays for itself in about 500 days, well over a year. That's the best case: on a typical day I spent less, and the electricity isn't free. Against that, DeepSeek keeps raising its prices, so the sums tip further towards running locally over time. But that sum misses the point. Running locally, I can leave it working all the time without watching the meter, so I expect to use it more than before, not less. Local also means private: my code and issues never leave the machine. And it was never only about money: it was also an exercise in understanding AI better. Making a model fit taught me how these models actually use memory, from quantisation to the KV cache, in a way that calling an API never did.
 
 Is it as good as DeepSeek? It's too early to say: I've only just got it working, and it's still bedding in. It can only work on one issue at a time, and it seems slightly slower per issue, but I can leave it alone to work through hundreds of issues without running up a bill. I haven't run it long enough to compare how many it fixes, or how often it gets stuck in loops. The hardest issues still go to Claude.
 
