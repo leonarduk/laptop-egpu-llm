@@ -162,7 +162,7 @@ Both cards, same driver, 24 GB between them. Finally.
 
 ## What 24 GB actually buys
 
-Getting Windows to see both cards turned out to be only half the battle. I dropped LM Studio, which couldn't split models across both GPUs properly and failed on anything over 8 GB. With hindsight it was probably its defaults: it splits a model evenly across unequal cards, and reserves memory for four chats at once. Both are fixable (the repo has the settings), but by then I'd moved to Ollama. For a front end I use Kun Desktop, a sort of Claude Desktop replacement that can use Ollama for its models; I use it mostly with DeepSeek and local LLMs.
+Getting Windows to see both cards turned out to be only half the battle. I dropped LM Studio, which couldn't split models across both GPUs properly and failed on anything over 8 GB. With hindsight it was probably its defaults: it splits a model evenly across unequal cards, and reserves memory for four chats at once. Both are fixable (the repo has the settings), but by then I'd moved to Ollama. For a front end I use [Kun Desktop](https://www.deepseek-gui.com/), a sort of Claude Desktop replacement that can use Ollama for its models; I use it mostly with DeepSeek and local LLMs.
 
 <!-- Photo. Caption: "Kun Desktop running a local 27B model, quantised of course" -->
 
