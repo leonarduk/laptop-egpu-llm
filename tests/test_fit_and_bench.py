@@ -171,6 +171,60 @@ def test_per_layer_kv_head_counts_skip_layers_without_attention():
     assert kv.bytes == 256 * 2 * 2 * (64 + 64) * 2
 
 
+def _hybrid(kv_heads, **extra):
+    info = {
+        "general.architecture": "hybrid",
+        "hybrid.block_count": 4,
+        "hybrid.attention.head_count_kv": kv_heads,
+        "hybrid.attention.key_length": 64,
+    }
+    info.update(extra)
+    return {"parameters": "num_ctx 256", "model_info": info}
+
+
+@pytest.mark.parametrize("bad", ["2", None, 2.5, True, {"n": 2}])
+def test_a_bad_per_layer_entry_is_refused_not_dropped(bad):
+    """Dropping it would shift every later layer down one index, and the
+    full_attention_interval test would then pick the wrong layers."""
+    show = _hybrid([bad, 2, 0, 2], **{"hybrid.full_attention_interval": 2})
+    with pytest.raises(KvUnknown) as caught:
+        estimate_kv_cache(show, {})
+    assert "head_count_kv[0]" in str(caught.value)
+
+
+def test_a_per_layer_list_shorter_than_block_count_is_refused():
+    with pytest.raises(KvUnknown) as caught:
+        estimate_kv_cache(_hybrid([0, 2, 0]), {})
+    assert "block_count is 4" in str(caught.value)
+
+
+def test_integral_floats_are_accepted_per_layer_and_scalar():
+    """JSON can carry 2 as 2.0; that is still a whole number."""
+    assert estimate_kv_cache(_hybrid([0, 2.0, 0, 2]), {}).kv_layers == 2
+    show = _hybrid(4.0, **{"hybrid.block_count": 4.0})
+    assert estimate_kv_cache(show, {}).kv_layers == 4
+
+
+@pytest.mark.parametrize(
+    "key", ["hybrid.block_count", "hybrid.attention.key_length", "hybrid.full_attention_interval"]
+)
+def test_a_non_integral_scalar_is_refused_not_truncated(key):
+    """4.5 is a malformed payload; truncating it to 4 would produce a
+    confident wrong number."""
+    show = _hybrid(2, **{key: 4.5})
+    with pytest.raises(KvUnknown) as caught:
+        estimate_kv_cache(show, {})
+    assert "4.5" in str(caught.value)
+
+
+def test_modelfile_num_ctx_beats_ollama_context_length(qwen35_show):
+    """OLLAMA_CONTEXT_LENGTH is only the server's default for models that
+    do not set num_ctx; a Modelfile PARAMETER num_ctx does set it."""
+    env = dict(MACHINE_ENV, OLLAMA_CONTEXT_LENGTH="8192")
+    kv = estimate_kv_cache(qwen35_show, env)
+    assert (kv.num_ctx, kv.ctx_source) == (100000, "Modelfile")
+
+
 @pytest.mark.parametrize(
     "show",
     [

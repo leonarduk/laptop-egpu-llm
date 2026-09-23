@@ -111,13 +111,25 @@ def _modelfile_num_ctx(parameters: object) -> int | None:
     return None
 
 
-def _int(info: Mapping[str, object], key: str) -> int | None:
-    value = info.get(key)
+def _as_int(value: object, what: str) -> int:
+    """A whole number, or KvUnknown. A float is accepted only when it is
+    integral (JSON may carry 4 as 4.0); 4.5 heads is a malformed payload,
+    and truncating it to 4 would be a confident wrong number."""
     if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
+        raise KvUnknown(f"{what} is {value!r}, not a number")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
         return int(value)
-    return None
+    raise KvUnknown(f"{what} is {value!r}, not a whole number")
+
+
+def _int(info: Mapping[str, object], key: str) -> int | None:
+    """``info[key]`` as a whole number; None only when the key is absent."""
+    value = info.get(key)
+    if value is None:
+        return None
+    return _as_int(value, key)
 
 
 def _context(
@@ -125,7 +137,13 @@ def _context(
 ) -> tuple[int, str]:
     """(num_ctx, where it came from), in Ollama's own order of precedence:
     the Modelfile, then OLLAMA_CONTEXT_LENGTH, then the built-in default --
-    each capped at the context the model was trained for, as Ollama does."""
+    each capped at the context the model was trained for, as Ollama does.
+
+    The Modelfile wins over the environment variable because
+    OLLAMA_CONTEXT_LENGTH is only the server's *default*: Ollama applies it
+    when neither the model nor the request sets num_ctx, and a Modelfile
+    ``PARAMETER num_ctx`` is such a setting. (A per-request num_ctx would
+    override both, but ``fit`` has no request to read.)"""
     num_ctx = _modelfile_num_ctx(show.get("parameters"))
     source = "Modelfile"
     if num_ctx is None:
@@ -165,8 +183,14 @@ def _kv_elements_per_token(info: Mapping[str, object], arch: str) -> tuple[int, 
 
     kv_heads = info.get(f"{arch}.attention.head_count_kv")
     if isinstance(kv_heads, list):
-        # Per-layer counts; a zero marks a layer without attention.
-        per_layer = [int(h) for h in kv_heads[:blocks] if isinstance(h, (int, float))]
+        # Per-layer counts; a zero marks a layer without attention. Position
+        # is the layer index, so a bad entry cannot just be dropped -- every
+        # later layer would shift and the interval test above would pick the
+        # wrong ones. Refuse the whole list instead.
+        key = f"{arch}.attention.head_count_kv"
+        if len(kv_heads) < blocks:
+            raise KvUnknown(f"{key} lists {len(kv_heads)} layers but block_count is {blocks}")
+        per_layer = [_as_int(h, f"{key}[{i}]") for i, h in enumerate(kv_heads[:blocks])]
     else:
         count = _int(info, f"{arch}.attention.head_count_kv") or heads
         if not count:

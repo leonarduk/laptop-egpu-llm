@@ -6,6 +6,7 @@ nothing installed but Python, and everything needed is one JSON POST.
 
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -91,7 +92,15 @@ class OllamaClient:
             detail = exc.read().decode("utf-8", "replace").strip()
             raise OllamaUnavailable(f"{url} returned {exc.code}: {detail}") from exc
         except (urllib.error.URLError, OSError) as exc:
+            # URLError covers refused/unresolvable; OSError covers the rest of
+            # the transport, including socket.timeout and ConnectionError.
             raise OllamaUnavailable(f"{url} unreachable: {exc}") from exc
+        except http.client.HTTPException as exc:
+            # Not an OSError: a server that drops mid-body raises
+            # IncompleteRead, a garbled status line BadStatusLine.
+            raise OllamaUnavailable(f"{url} broke off the response: {exc!r}") from exc
+        except UnicodeDecodeError as exc:
+            raise OllamaUnavailable(f"{url} returned a body that is not UTF-8: {exc}") from exc
 
         try:
             parsed = json.loads(body)

@@ -163,6 +163,36 @@ def test_fit_falls_back_to_file_size_and_says_so_when_show_fails(wire, capsys):
     assert "KV     ?" in out
 
 
+def test_fit_falls_back_when_show_hits_a_connection_error(wire, capsys, monkeypatch):
+    """Through the real client, so the URLError -> OllamaUnavailable
+    translation is exercised rather than assumed: /api/tags answers, then
+    the server goes away before /api/show."""
+    import urllib.error
+
+    from ollama_tools.client import OllamaClient
+
+    class TagsOnly(OllamaClient):
+        def list_models(self):
+            return [ModelInfo("m:latest", SEVEN_B)]
+
+    def refuse(request, timeout=None):
+        raise urllib.error.URLError("[WinError 10061] connection refused")
+
+    monkeypatch.setattr("ollama_tools.client.urllib.request.urlopen", refuse)
+    wire(TagsOnly())
+    assert run(["fit", "m"]) == cli.OK
+    out = capsys.readouterr().out
+    assert "KV not estimated (/api/show failed:" in out
+    assert "connection refused" in out
+
+
+def test_fit_falls_back_when_show_carries_a_malformed_value(wire, capsys, qwen35_show):
+    qwen35_show["model_info"]["qwen35.attention.head_count_kv"] = 4.5
+    wire(StubClient({"m:latest": SEVEN_B}, show={"m:latest": qwen35_show}))
+    assert run(["fit", "m"]) == cli.OK
+    assert "KV not estimated (qwen35.attention.head_count_kv is 4.5" in capsys.readouterr().out
+
+
 def test_fit_falls_back_when_show_lacks_the_architecture(wire, capsys):
     wire(StubClient({"m:latest": SEVEN_B}))
     assert run(["fit", "m"]) == cli.OK
