@@ -205,6 +205,8 @@ It isn't perfect, though. 8 + 16 isn't one clean 24 GB pool: the laptop's own ca
 
 For me, yes, and mostly because of cost rather than speed. I have an app of my own, issue-worm, that works through a project's issues one at a time and fixes them. On DeepSeek I rationed it: at the worst I was spending about £2 a day, and a single chat that went into a tailspin could cost £6 on its own. The hardware cost about £1,000: around £600 for the card, and the rest for the enclosure and power supply. Against my worst DeepSeek spend of £2 a day, it pays for itself in about 500 days, well over a year. That's the best case: on a typical day I spent less, and the electricity isn't free. But that sum misses the point. Running locally, I can leave it working all the time without watching the meter, so I expect to use it more than before, not less. And it was never only about money: it was also an exercise in understanding AI better. Making a model fit taught me how these models actually use memory, from quantisation to the KV cache, in a way that calling an API never did.
 
+Is it as good as DeepSeek? It's too early to say properly. It can only work on one issue at a time, and it seems slightly slower per issue, but I can leave it alone to work through hundreds of issues without costing me anything. I haven't run it long enough to compare how many it fixes, or how often it gets stuck in loops. The hardest issues still go to Claude.
+
 People worry that USB4 is too slow for an external card. I haven't measured it, but once a model is loaded very little data crosses the cable; what matters is getting the whole model into graphics memory, and that's what the second card buys you.
 
 But it is a hobbyist project, and if you try it, 
