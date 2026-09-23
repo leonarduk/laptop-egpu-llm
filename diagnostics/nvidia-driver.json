@@ -1,0 +1,5 @@
+{
+  "version": "616.92",
+  "flavour": "desktop",
+  "note": "The driver version both GPUs are pinned to. Update-NvidiaDriver.ps1 installs this unless given -Version. The desktop package also carries the OEM notebook INFs."
+}
