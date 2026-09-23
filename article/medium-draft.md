@@ -191,7 +191,7 @@ These are my final Ollama settings: spread a model across both cards, turn on fl
 ```powershell
 setx OLLAMA_SCHED_SPREAD 1
 setx OLLAMA_FLASH_ATTENTION 1
-setx OLLAMA_KV_CACHE_TYPE q4_0     # q8_0 if answers get worse
+setx OLLAMA_KV_CACHE_TYPE q4_0
 setx OLLAMA_NUM_PARALLEL 1
 ```
 
@@ -212,7 +212,7 @@ People worry that USB4 is too slow for an external card. I haven't measured it, 
 But it is a hobbyist project, and if you try it, 
 the three things I'd tell you are:
 
-- **If only one NVIDIA card works at a time, check the driver versions first.** Then stop Windows Update from installing drivers (Group Policy *Do not include drivers with Windows Updates*, or on Windows Home the registry value `ExcludeWUDriversInQualityUpdate` = 1), or it will do it again.
+- **If only one NVIDIA card works at a time, check the driver versions first.** Then stop Windows Update from installing drivers (Group Policy *Do not include drivers with Windows Updates*, or on Windows Home the DWORD `ExcludeWUDriversInQualityUpdate` = 1 under `HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate`), or it will do it again.
 - **Boot with the enclosure attached, and use Restart, not Shut down.**
 - **Budget for the KV cache, not just the model's download size.** Quantise it, and keep parallel chats to what you actually use.
 
