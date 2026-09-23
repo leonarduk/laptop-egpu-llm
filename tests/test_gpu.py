@@ -26,10 +26,51 @@ def test_parses_csv_rows_in_mib():
     assert gpus[0].free_bytes == 7700 * MIB
 
 
-def test_skips_malformed_rows_without_losing_good_ones():
-    """One bad line must not hide the cards that did report."""
-    gpus = parse_nvidia_smi("0, GPU A, 8151, 7700\ngarbage\n1, GPU B, notanumber, 5\n")
-    assert [g.name for g in gpus] == ["GPU A"]
+@pytest.mark.parametrize(
+    "bad_row",
+    [
+        "1, NVIDIA GeForce RTX 5060 Ti, [N/A], [N/A]",
+        "1, NVIDIA GeForce RTX 5060 Ti, 16311, [N/A]",
+        "garbage",
+        "1, GPU B, notanumber, 5",
+    ],
+)
+def test_a_malformed_row_is_an_error_not_a_skipped_card(bad_row):
+    """Skipping used to be the behaviour, and it is not the cautious one."""
+    with pytest.raises(GpuUnavailable) as caught:
+        parse_nvidia_smi(f"0, GPU A, 8151, 7700\n{bad_row}\n")
+    assert "could not be read" in str(caught.value)
+
+
+def test_skipping_a_small_card_would_have_raised_the_budget():
+    """Why a bad row must raise: conservative is card count x smallest
+    card, so losing the small card that failed to report grows the budget
+    past what the cards that are really there can hold."""
+    small = Gpu(0, "small", 4096 * MIB, 4000 * MIB)
+    big = Gpu(1, "big", 16311 * MIB, 16000 * MIB)
+    big_twin = Gpu(2, "big twin", 16311 * MIB, 16000 * MIB)
+    assert budget_bytes([big, big_twin], CONSERVATIVE) > budget_bytes(
+        [small, big, big_twin], CONSERVATIVE
+    )
+
+
+def test_query_gpus_surfaces_a_malformed_row(monkeypatch):
+    """End to end through query_gpus, with nvidia-smi mocked -- the
+    pickers and fit both see GpuUnavailable, not a shrunken card list."""
+    import subprocess
+
+    import ollama_tools.gpu as gpu_mod
+
+    monkeypatch.setattr(gpu_mod.shutil, "which", lambda name: "nvidia-smi")
+    monkeypatch.setattr(
+        gpu_mod.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(
+            a[0], 0, stdout="0, GPU A, 8151, 7700\n1, GPU B, 16311, [N/A]\n", stderr=""
+        ),
+    )
+    with pytest.raises(GpuUnavailable):
+        gpu_mod.query_gpus()
 
 
 def test_blank_output_is_no_gpus():
