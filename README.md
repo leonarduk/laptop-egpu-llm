@@ -75,6 +75,7 @@ was built and measured.
 - [`diagnostics/`](diagnostics) - Windows-only PowerShell for inspecting and fixing GPU/driver state
 - [`docs/model-picker.md`](docs/model-picker.md) - what to run at 7.9 / 15.9 / 23.8 GB, and the sizing arithmetic behind it
 - [`docs/device-error-codes.md`](docs/device-error-codes.md) - what Device Manager codes actually mean here
+- [`docs/driver-fix-walkthrough.md`](docs/driver-fix-walkthrough.md) - the full evidence trail: driver versions, installer logs, event log, `pnputil` output
 - [`docs/lmstudio-multi-gpu.md`](docs/lmstudio-multi-gpu.md) - making LM Studio use asymmetric GPUs properly
 - [`docs/ollama-multi-gpu.md`](docs/ollama-multi-gpu.md) - making Ollama use asymmetric GPUs properly (`OLLAMA_SCHED_SPREAD`, KV cache quantisation, where the env vars actually have to be set)
 - [`docs/bitlocker-notes.md`](docs/bitlocker-notes.md) - which steps risk a recovery-key prompt
