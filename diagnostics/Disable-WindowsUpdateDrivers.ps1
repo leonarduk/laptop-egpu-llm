@@ -34,8 +34,8 @@
 .PARAMETER Undo
     Put both values back as they were before -Apply (saved by -Apply in
     %ProgramData%\laptop-egpu-llm\wu-driver-settings.json), letting Windows Update
-    deliver drivers again. With no saved copy it removes both values, which leaves
-    Windows on its own defaults.
+    deliver drivers again. With no saved copy it falls back to a stock install's
+    state: no policy value, and SearchOrderConfig = 1.
 
 .EXAMPLE
     .\Disable-WindowsUpdateDrivers.ps1            # show the current state
@@ -142,10 +142,10 @@ elseif ($Undo) {
             Write-Host "Restored the values saved in $backupFile"
         }
         else {
-            # Absent is Windows' default for both, so removing them is the undo.
-            Write-Warning "No saved values at $backupFile; removing both so Windows uses its defaults."
+            # A stock install has no policy value, and SearchOrderConfig present as 1.
+            Write-Warning "No saved values at $backupFile; setting a stock install's values instead."
             Set-OrRemove $policyKey $policyName $null
-            Set-OrRemove $searchKey $searchName $null
+            Set-OrRemove $searchKey $searchName 1
         }
     }
     else {

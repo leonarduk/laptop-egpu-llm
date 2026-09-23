@@ -169,7 +169,9 @@ function Get-InfDriverVersion {
 function Get-NvidiaDisplayPackage {
     <# NVIDIA packages in the Display class of the driver store, from pnputil. #>
     $output = & pnputil.exe /enum-drivers /class Display
-    if ($LASTEXITCODE -ne 0) { return @() }
+    if ($LASTEXITCODE -ne 0) {
+        throw "pnputil /enum-drivers failed with exit code $LASTEXITCODE."
+    }
     $packages = @()
     $current = @{}
     foreach ($line in @($output) + '') {
@@ -191,6 +193,7 @@ if (Test-Path $pinFile) {
     if (-not $Flavour) { $Flavour = $pin.flavour }
 }
 if (-not $Flavour) { $Flavour = 'desktop' }
+$versionLabel = if ($Version) { $Version } else { 'unpinned' }
 if (-not $DisplayDriverPath -and $Version -notmatch '^\d{3}\.\d{2}$') {
     throw "Version '$Version' is not in the form 616.92. Pass -Version or fix $pinFile."
 }
@@ -261,7 +264,7 @@ if ($devices.Count -eq 0 -and -not $Inf) {
 }
 
 Write-Host ''
-Write-Host "--- INF per GPU (driver $Version) ---" -ForegroundColor Cyan
+Write-Host "--- INF per GPU (driver $versionLabel) ---" -ForegroundColor Cyan
 $chosen = @()
 if ($Inf) {
     $chosen = $Inf
@@ -306,7 +309,7 @@ if ($Plan) {
 
 # --- install ---------------------------------------------------------------
 $installer = Join-Path $PSScriptRoot 'Install-NvidiaDriver.ps1'
-if ($PSCmdlet.ShouldProcess(($chosen -join ', '), "Install NVIDIA driver $Version with pnputil")) {
+if ($PSCmdlet.ShouldProcess(($chosen -join ', '), "Install NVIDIA driver $versionLabel with pnputil")) {
     & $installer -DisplayDriverPath $DisplayDriverPath -Inf $chosen -Force:$Force -Confirm:$false
 }
 elseif ($WhatIfPreference) {
@@ -318,7 +321,14 @@ else {
 }
 
 # --- what is left in the store --------------------------------------------
-$packages = @(Get-NvidiaDisplayPackage)
+try {
+    $packages = @(Get-NvidiaDisplayPackage)
+}
+catch {
+    Write-Host "Could not list the driver store: $($_.Exception.Message) Check by hand:" -ForegroundColor Yellow
+    Write-Host '  pnputil /enum-drivers /class Display'
+    $packages = $null
+}
 $stale = @()
 $unreadable = @()
 foreach ($p in $packages) {
@@ -328,8 +338,11 @@ foreach ($p in $packages) {
     elseif ($marketing -ne $Version) { $stale += $p }
 }
 Write-Host ''
-if ($packages.Count -eq 0) {
-    Write-Host 'Could not list NVIDIA packages from pnputil (non-English Windows?). Check by hand:' -ForegroundColor Yellow
+if ($null -eq $packages) {
+    $packages = @()
+}
+elseif ($packages.Count -eq 0) {
+    Write-Host 'pnputil listed no NVIDIA display packages; its field names are localised, so on non-English Windows check by hand:' -ForegroundColor Yellow
     Write-Host '  pnputil /enum-drivers /class Display'
 }
 foreach ($p in $unreadable) {
