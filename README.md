@@ -2,7 +2,7 @@
 
 Running local LLMs on a laptop with an external GPU, using both the internal and external GPU at once for ~24 GB of combined VRAM.
 
-This repo holds the diagnostic scripts and reference notes from getting that working on Windows 11. The narrative write-up lives on Medium (link TBC). **To build one yourself, follow [`docs/HOWTO.md`](docs/HOWTO.md).**
+This repo holds the diagnostic scripts and reference notes from getting that working on Windows 11. The narrative write-up is on Medium: [How I tripled the graphics memory on my laptop to get a local LLM with a 200k context window](https://medium.com/@steveleonard11/how-i-tripled-the-graphics-memory-on-my-laptop-to-get-a-local-llm-with-a-200k-context-window-498c60591631). **To build one yourself, follow [`docs/HOWTO.md`](docs/HOWTO.md).**
 
 ## The build
 
