@@ -32,8 +32,10 @@ from dataclasses import dataclass
 KV_CACHE_TYPES = {"f16": 2.0, "q8_0": 34 / 32, "q4_0": 18 / 32}
 DEFAULT_KV_CACHE_TYPE = "f16"
 
-# Keys whose presence means the attention-only formula does not apply.
-_UNSUPPORTED_MARKERS = ("full_attention_interval", "ssm.", "attention.kv_lora_rank")
+# Keys (after the "<arch>." prefix) whose presence means the attention-only
+# formula does not apply. Prefixes, not substrings, so an unrelated key that
+# merely contains "ssm." somewhere does not trip it.
+_UNSUPPORTED_PREFIXES = ("full_attention_interval", "ssm.", "attention.kv_lora_rank")
 
 _NUM_CTX = re.compile(r"^\s*num_ctx\s+(\d+)\s*$", re.MULTILINE)
 
@@ -81,13 +83,25 @@ def kv_shape(show: dict, num_ctx: int | None = None) -> KvShape:
     upper bound -- a server with ``OLLAMA_CONTEXT_LENGTH`` set may load
     with less -- so it errs towards refusing.
     """
+    try:
+        return _kv_shape(show, num_ctx)
+    except KvCacheUnknown:
+        raise
+    except (TypeError, ValueError) as exc:
+        # A model_info value of an unexpected type: say so and exit 2, not
+        # a traceback.
+        raise KvCacheUnknown(f"unexpected /api/show model_info: {exc}") from exc
+
+
+def _kv_shape(show: dict, num_ctx: int | None) -> KvShape:
     info = show.get("model_info") or {}
     arch = info.get("general.architecture")
     if not arch:
         raise KvCacheUnknown("/api/show reported no general.architecture")
 
+    prefix = f"{arch}."
     for key in info:
-        if key.startswith(f"{arch}.") and any(m in key for m in _UNSUPPORTED_MARKERS):
+        if key.startswith(prefix) and key[len(prefix):].startswith(_UNSUPPORTED_PREFIXES):
             raise KvCacheUnknown(
                 f"{arch} is not a plain attention architecture ({key}); its KV cache "
                 "cannot be computed from layer shape. Measure it with "
@@ -120,7 +134,9 @@ def kv_shape(show: dict, num_ctx: int | None = None) -> KvShape:
         key_dim = derived if key_dim is None else key_dim
         value_dim = derived if value_dim is None else value_dim
 
-    elements = sum(h * (int(key_dim) + int(value_dim)) for h in kv_heads)
+    key_dims = _per_layer(key_dim, layers, "key_length")
+    value_dims = _per_layer(value_dim, layers, "value_length")
+    elements = sum(h * (k + v) for h, k, v in zip(kv_heads, key_dims, value_dims))
 
     context = num_ctx or manifest_num_ctx(show.get("parameters", "")) or get("context_length")
     if not context:

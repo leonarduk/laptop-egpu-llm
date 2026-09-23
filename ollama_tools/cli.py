@@ -140,7 +140,7 @@ def _check(args) -> int:
     # list from `sizes` itself, so every name is pulled by construction.
     unpulled: list[str] = []
     # Same collect-don't-return reasoning, for models whose KV cache cannot
-    # be computed (hybrid architectures): (name, why).
+    # be computed (hybrid architectures, /api/show failing): (name, why).
     unsizable: list[tuple[str, str]] = []
     for name in models:
         if name not in sizes:
@@ -153,7 +153,9 @@ def _check(args) -> int:
             try:
                 shape = kv_shape(client.show(name), num_ctx)
             except OllamaUnavailable as exc:
-                return _refuse(f"{exc}", CANNOT_ANSWER)
+                unsizable.append((name, f"/api/show failed: {exc}"))
+                print(f"  {name:<40} KV cache could not be read - see below")
+                continue
             except KvCacheUnknown as exc:
                 unsizable.append((name, str(exc)))
                 print(f"  {name:<40} KV cache cannot be computed - see below")
@@ -195,7 +197,7 @@ def _check(args) -> int:
     if unsizable:
         listed = "".join(f"\n  {name}: {why}" for name, why in unsizable)
         return _refuse(
-            f"{len(unsizable)} model(s) have a KV cache that cannot be computed:{listed}",
+            f"{len(unsizable)} model(s) have a KV cache that could not be sized:{listed}",
             CANNOT_ANSWER,
         )
     if unpulled:

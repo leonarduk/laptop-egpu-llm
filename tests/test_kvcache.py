@@ -70,6 +70,40 @@ def test_explicit_key_and_value_lengths_and_per_layer_heads():
     assert kv_shape(show).elements_per_token == 4 * (256 + 128)
 
 
+def test_per_layer_key_and_value_lengths():
+    show = {
+        "model_info": {
+            "general.architecture": "x",
+            "x.block_count": 2,
+            "x.attention.head_count_kv": 2,
+            "x.attention.key_length": [64, 128],
+            "x.attention.value_length": [64, 128],
+            "x.context_length": 10,
+        }
+    }
+    assert kv_shape(show).elements_per_token == 2 * 128 + 2 * 256
+
+
+def test_malformed_model_info_is_unknown_not_a_traceback():
+    show = {
+        "model_info": {
+            "general.architecture": "x",
+            "x.block_count": 2,
+            "x.attention.head_count_kv": {"not": "a number"},
+            "x.attention.key_length": 64,
+            "x.attention.value_length": 64,
+            "x.context_length": 10,
+        }
+    }
+    with pytest.raises(KvCacheUnknown):
+        kv_shape(show)
+
+
+def test_ssm_only_counts_as_a_key_prefix():
+    show = {"model_info": dict(QWEN25_14B["model_info"], **{"qwen2.rope.not_ssm.x": 1})}
+    assert kv_shape(show).context == 32768
+
+
 @pytest.mark.parametrize(
     "key",
     ["qwen35.full_attention_interval", "qwen35.ssm.state_size", "qwen35.attention.kv_lora_rank"],

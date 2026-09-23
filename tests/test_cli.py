@@ -454,6 +454,27 @@ def test_show_failing_is_cannot_answer(wire):
     assert run(["fit", "m", "--parallel", "2"]) == cli.CANNOT_ANSWER
 
 
+def test_one_show_failure_does_not_hide_the_other_verdicts(wire, capsys):
+    wire(
+        StubClient(
+            {"qwen2.5-coder:14b": FOURTEEN_B, "flaky": SEVEN_B},
+            show={"qwen2.5-coder:14b": QWEN25_14B_SHOW, "flaky": OllamaUnavailable("boom")},
+        ),
+        gpus=BOTH_CARDS,
+    )
+    argv = ["fit", "flaky", "qwen2.5-coder:14b", "--strategy", "proportional", "--parallel", "2", "--kv-cache-type", "q4_0"]
+    assert run(argv) == cli.CANNOT_ANSWER
+    out = capsys.readouterr()
+    assert "fits" in out.out
+    assert "flaky: /api/show failed: boom" in out.err
+
+
+def test_bench_refuses_when_the_slots_do_not_fit(wire):
+    """bench routes through the same check, so --parallel is honoured."""
+    wire(fourteen_b(), gpus=BOTH_CARDS)
+    assert run(["bench", "qwen2.5-coder:14b", "--parallel", "4"]) == cli.DOES_NOT_FIT
+
+
 def test_start_refuses_when_the_slots_do_not_fit(wire):
     wire(fourteen_b(), gpus=BOTH_CARDS)
     assert run(["start", "qwen2.5-coder:14b", "--parallel", "4"]) == cli.DOES_NOT_FIT
