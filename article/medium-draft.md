@@ -1,7 +1,7 @@
 # How I turn a laptop into a desktop in my pursuit of a usable Local LLM
 
 Like many, I love Claude Code. I also keep running out of tokens. 
-Even on Claude Max I am burning through my tokens  quickly, 
+Even on Claude Max I am burning through my tokens quickly, 
 so I had started sending my overflow work to DeepSeek, as the per
 token costs are much lower. 
 That worked, but it got me wondering whether I could run something 
@@ -25,7 +25,7 @@ together: 8 + 16 = 24 GB. One better than the article.
 
 Spoiler: I got there. But I'll say up front that it was
 hard, and in hindsight this is for hobbyists only. Maybe better
-to just buy a Mac, who are spoiled with their unified memory.
+to just buy a Mac; Mac users are spoiled with unified memory.
 
 ## One card or the other, never both
 
@@ -43,8 +43,8 @@ enclosure. I spent hours looking in the wrong place.
 ## The error that swapped seats
 
 What finally moved things on was ignoring Device Manager's
-friendly messages and (Claude Fable) asking Windows for the 
-raw error code on each card:
+friendly messages and, with Claude's help, asking Windows 
+for the raw error code on each card:
 
 ```powershell
 Get-PnpDevice -Class Display | Where-Object { $_.Present -eq $true } |
@@ -178,7 +178,7 @@ loads, whether you use it or not. My 27B model is 11.3 GB
 of weights, but at a 216,000-token context its KV cache adds
 roughly another 8 GB.
 
-That's why the 32B coding model didn't fit at first. 
+That's why a 32B coding model I tried didn't fit at first. 
 The KV cache pushed it over, not the weights. The fix 
 is to store the cache at lower precision. Turn on flash 
 attention (`OLLAMA_FLASH_ATTENTION=1`, which the next 
