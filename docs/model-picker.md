@@ -77,7 +77,7 @@ once headroom is counted.
 | Job | Size to aim for | On this machine |
 |---|---|---|
 | Coder | 14B at Q4 | `qwen2.5-coder:14b` (8.37 GB) |
-| General | 27B at IQ3, *reduced context* | `qwen3.8-100k` (~15 GB total with a `q4_0` KV cache, measured 100% GPU under Ollama). **Tight**: well under the 15-20% headroom rule, so only if nothing else is using the cards |
+| General | 27B at IQ3, *reduced context* | `qwen3.8-100k` (~15 GB total with a `q4_0` KV cache, measured 100% GPU under Ollama). **Tight** against this tier's ~15.9 GB even-split budget: well under the 15-20% headroom rule, so only if nothing else is using the cards |
 
 A model's KV cache is reserved for its manifest's `num_ctx` on every load,
 whether or not a given prompt is anywhere near that long — see

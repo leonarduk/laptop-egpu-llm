@@ -94,7 +94,9 @@ ollama-tools coder-model                 # which coder model fits the VRAM attac
 ollama-tools general-model               # which general-purpose model fits the VRAM attached right now
 ```
 
-`coder-model` picks from measured results, not advertised size, by VRAM budget:
+`coder-model` picks from measured results, not advertised size, by VRAM budget
+(each threshold is the free VRAM needed, set at or just above that model's measured
+total: `qwen3.8-216k` measured 19.29 GB = 17.97 GiB, hence 18 GiB):
 `qwen3.8-216k` at 18 GiB or more, `qwen3.8-100k` at 14 GiB, `qwen2.5-coder:14b`
 at 10 GiB, `qwen2.5-coder:7b` at 7 GiB (the internal 8 GB card alone),
 `qwen2.5-coder:1.5b` at 3 GiB, `qwen2.5-coder:0.5b` otherwise (including no
