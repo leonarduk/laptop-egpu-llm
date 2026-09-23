@@ -4,13 +4,21 @@ contract. The other tests use a fake client that raises that exception
 directly, so they bypass the translation entirely; these drive it.
 """
 
+import http.client
 import io
 import json
+import socket
 import urllib.error
 
 import pytest
 
-from ollama_tools.client import LoadedModel, ModelInfo, OllamaClient, OllamaUnavailable
+from ollama_tools.client import (
+    LoadedModel,
+    ModelInfo,
+    OllamaClient,
+    OllamaUnavailable,
+    normalise_model_name,
+)
 
 
 class FakeResponse(io.BytesIO):
@@ -136,3 +144,68 @@ def test_endpoint_trailing_slash_does_not_double_up(monkeypatch):
     calls = stub_urlopen(monkeypatch, b'{"models": []}')
     OllamaClient("http://localhost:11434/").list_models()
     assert calls[0].full_url == "http://localhost:11434/api/tags"
+
+
+@pytest.mark.parametrize(
+    "given, expected",
+    [
+        ("qwen3.8-216k", "qwen3.8-216k:latest"),
+        ("qwen2.5-coder:7b", "qwen2.5-coder:7b"),
+        ("qwen3.8-216k:latest", "qwen3.8-216k:latest"),
+        ("hf.co/unsloth/Qwen3-GGUF", "hf.co/unsloth/Qwen3-GGUF:latest"),
+        # The colon here is a port, not a tag.
+        ("registry.local:5000/team/model", "registry.local:5000/team/model:latest"),
+        ("registry.local:5000/team/model:q4", "registry.local:5000/team/model:q4"),
+    ],
+)
+def test_normalise_model_name_adds_latest_only_when_untagged(given, expected):
+    assert normalise_model_name(given) == expected
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t\n"])
+def test_normalise_model_name_leaves_blank_input_blank(blank):
+    """Not ":latest" -- an empty name is a missing name, and dressing it up
+    as a tag would hide that from the lookup that follows."""
+    assert normalise_model_name(blank) == ""
+
+
+@pytest.mark.parametrize(
+    "given, expected",
+    [("  qwen3.8-216k  ", "qwen3.8-216k:latest"), ("\tqwen2.5-coder:7b\n", "qwen2.5-coder:7b")],
+)
+def test_normalise_model_name_strips_surrounding_whitespace(given, expected):
+    """An env-file value or a pasted name often carries stray whitespace."""
+    assert normalise_model_name(given) == expected
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        urllib.error.URLError("connection refused"),
+        socket.timeout("timed out"),
+        ConnectionResetError("reset by peer"),
+        http.client.IncompleteRead(b"{\"model_in"),
+        http.client.RemoteDisconnected("closed"),
+    ],
+)
+def test_transport_failures_on_show_become_ollama_unavailable(monkeypatch, error):
+    """Every way the connection can fail maps to OllamaUnavailable, which
+    is what fit's KV estimate falls back on. IncompleteRead is the one
+    that is not an OSError, so it needs its own clause."""
+    stub_urlopen(monkeypatch, error)
+    with pytest.raises(OllamaUnavailable):
+        OllamaClient().show("m:latest")
+
+
+def test_a_non_utf8_body_becomes_ollama_unavailable(monkeypatch):
+    stub_urlopen(monkeypatch, b"\xff\xfe\x00garbage")
+    with pytest.raises(OllamaUnavailable):
+        OllamaClient().show("m:latest")
+
+
+def test_show_posts_the_model_name(monkeypatch):
+    calls = stub_urlopen(monkeypatch, b'{"model_info": {"general.architecture": "qwen35"}}')
+    payload = OllamaClient().show("qwen3.8-100k:latest")
+    assert payload["model_info"]["general.architecture"] == "qwen35"
+    assert calls[0].full_url == "http://localhost:11434/api/show"
+    assert json.loads(calls[0].data) == {"model": "qwen3.8-100k:latest"}
