@@ -201,7 +201,9 @@ It isn't perfect, though. 8 + 16 isn't one clean 24 GB pool: the laptop's own ca
 
 ## Was it worth it?
 
-For inference, yes. People worry that USB4 is too slow for an external card. I haven't measured it, but the way these tools split a model across cards, very little data should need to cross the cable while it runs. Where I'd expect the cable to show is loading a model, which means copying gigabytes of weights across it. What matters is getting the whole model into graphics memory, and that's exactly what the second card buys you.
+For me, yes, and mostly because of cost rather than speed. I have an app of my own, issue-worm, that works through a project's issues one at a time and fixes them. On DeepSeek I rationed it: at the worst I was spending about £2 a day, and a single chat that went into a tailspin could cost £6 on its own. Running locally, I can leave it working all the time and pay only for the electricity. So I expect to use it more than before, not less.
+
+On the technical side: people worry that USB4 is too slow for an external card. I haven't measured it, but the way these tools split a model across cards, very little data should need to cross the cable while it runs. Where I'd expect the cable to show is loading a model, which means copying gigabytes of weights across it. What matters is getting the whole model into graphics memory, and that's exactly what the second card buys you.
 
 But it is a hobbyist project, and if you try it, 
 the three things I'd tell you are:
