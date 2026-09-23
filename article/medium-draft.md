@@ -157,9 +157,14 @@ Both cards, same driver, 24 GB between them. Finally.
 
 ## What 24 GB actually buys
 
-Getting Windows to see both cards turned out to be only
-half the battle. I dropped LM Studio, which kept failing 
-on this setup, and now run Ollama through Kun Desktop.
+Getting Windows to see both cards turned out to be only half
+the battle. I dropped LM Studio, which kept failing — it
+would not handle the two GPU properly and fail over 8GB — ,
+and now run with Ollama. I also use Kun Desktop, as a sort
+of Claude Desktop replacement that can use Ollama for its
+models. Its for DeepSeek and local LLMs mostly.
+
+<!-- Photo. Caption: "Kun desktop running a local 27b model, quantized of course" -->
 
 Left to itself, Ollama still put a 14B coding model 
 mostly on one card and spilled the rest into normal 
