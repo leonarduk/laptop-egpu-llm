@@ -10,7 +10,13 @@ import urllib.error
 
 import pytest
 
-from ollama_tools.client import LoadedModel, ModelInfo, OllamaClient, OllamaUnavailable
+from ollama_tools.client import (
+    LoadedModel,
+    ModelInfo,
+    OllamaClient,
+    OllamaUnavailable,
+    normalise_model_name,
+)
 
 
 class FakeResponse(io.BytesIO):
@@ -136,3 +142,27 @@ def test_endpoint_trailing_slash_does_not_double_up(monkeypatch):
     calls = stub_urlopen(monkeypatch, b'{"models": []}')
     OllamaClient("http://localhost:11434/").list_models()
     assert calls[0].full_url == "http://localhost:11434/api/tags"
+
+
+@pytest.mark.parametrize(
+    "given, expected",
+    [
+        ("qwen3.8-216k", "qwen3.8-216k:latest"),
+        ("qwen2.5-coder:7b", "qwen2.5-coder:7b"),
+        ("qwen3.8-216k:latest", "qwen3.8-216k:latest"),
+        ("hf.co/unsloth/Qwen3-GGUF", "hf.co/unsloth/Qwen3-GGUF:latest"),
+        # The colon here is a port, not a tag.
+        ("registry.local:5000/team/model", "registry.local:5000/team/model:latest"),
+        ("registry.local:5000/team/model:q4", "registry.local:5000/team/model:q4"),
+    ],
+)
+def test_normalise_model_name_adds_latest_only_when_untagged(given, expected):
+    assert normalise_model_name(given) == expected
+
+
+def test_show_posts_the_model_name(monkeypatch):
+    calls = stub_urlopen(monkeypatch, b'{"model_info": {"general.architecture": "qwen35"}}')
+    payload = OllamaClient().show("qwen3.8-100k:latest")
+    assert payload["model_info"]["general.architecture"] == "qwen35"
+    assert calls[0].full_url == "http://localhost:11434/api/show"
+    assert json.loads(calls[0].data) == {"model": "qwen3.8-100k:latest"}
