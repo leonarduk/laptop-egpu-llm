@@ -1,4 +1,4 @@
-# How I triple the graphics memory on my laptop in my pursuit of a usable Local LLM
+# How I triple the graphics memory on my laptop to get a local LLM with a 200k context window
 
 Like many, I love Claude Code. I also keep running out of tokens. 
 Even on Claude Max I am burning through my tokens quickly, 
@@ -157,9 +157,14 @@ Both cards, same driver, 24 GB between them. Finally.
 
 ## What 24 GB actually buys
 
-Getting Windows to see both cards turned out to be only
-half the battle. I dropped LM Studio, which kept failing 
-on this setup, and now run Ollama through Kun Desktop.
+Getting Windows to see both cards turned out to be only half
+the battle. I dropped LM Studio, which kept failing — it
+would not handle the two GPU properly and fail over 8GB — ,
+and now run with Ollama. I also use Kun Desktop, as a sort
+of Claude Desktop replacement that can use Ollama for its
+models. Its for DeepSeek and local LLMs mostly.
+
+<!-- Photo. Caption: "Kun desktop running a local 27b model, quantized of course" -->
 
 Left to itself, Ollama still put a 14B coding model 
 mostly on one card and spilled the rest into normal 
@@ -268,8 +273,11 @@ the three things I'd tell you are:
 - **Boot with the enclosure attached, and use Restart, not Shut down.**
 - **Budget for the KV cache, not just the model's download size.** Quantise it, and keep parallel chats to what you actually use.
 
-Everything I left out, from the exact commands and logs to
-the diagnostic scripts and the full benchmark numbers, is 
-in the repo: [laptop-egpu-llm on GitHub](https://github.com/leonarduk/laptop-egpu-llm).
+If you want to build one yourself, the step-by-step guide is
+in the repo: [the how-to guide](https://github.com/leonarduk/laptop-egpu-llm/blob/main/docs/HOWTO.md),
+from checking your laptop's port to sizing a model's context.
+Everything else I left out, from the exact commands and logs to
+the diagnostic scripts and the full benchmark numbers, is in
+[laptop-egpu-llm on GitHub](https://github.com/leonarduk/laptop-egpu-llm).
 
 <!-- Photo. Caption: "LM Studio showing the two GPUs" (still in the Medium draft) -->
