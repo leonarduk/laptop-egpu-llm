@@ -1,4 +1,4 @@
-# How I turn a laptop into a desktop in my pursuit of a usable Local LLM
+# How I triple the graphics memory on my laptop in my pursuit of a usable Local LLM
 
 Like many, I love Claude Code. I also keep running out of tokens. 
 Even on Claude Max I am burning through my tokens quickly, 
@@ -22,6 +22,8 @@ ugly black box and a big enough desk. Buy an RTX 5060 Ti
 with 16 GB, put it in a Razer Core X V2 enclosure, 
 plug it into the laptop over USB4, and use both cards 
 together: 8 + 16 = 24 GB. One better than the article.
+
+<!-- Photo: the setup. Caption: "Big ugly box on left hand side, two monitors off to save GPU, and Kun working on an issue with my local LLM" -->
 
 Spoiler: I got there. But I'll say up front that it was
 hard, and in hindsight this is for hobbyists only. Maybe better
@@ -169,13 +171,18 @@ variable nearly tripled the speed.
 
 ## The memory you don't see: the KV cache
 
-The download size of a model is not what it needs to run. 
-On top of the weights, every model needs a KV cache: its 
-working memory for the conversation, holding everything 
-it has read so far. The cache grows with the context length,
-and Ollama reserves the full amount the moment the model 
-loads, whether you use it or not. My 27B model is 11.3 GB
-of weights, but at a 216,000-token context its KV cache adds
+The download size of a model is not what it needs to run. On
+top of the weights, every model needs a KV cache. KV stands
+for key-value. For every token the model reads, it works out
+two lists of numbers, a key and a value, that its attention
+step uses to look back over the conversation when choosing
+the next word. Rather than recalculate them for the whole
+conversation every time, it keeps them. That store is the KV
+cache: in effect, the model's working memory for the
+conversation. The cache grows with the context length, and
+Ollama reserves the full amount the moment the model loads,
+whether you use it or not. My 27B model is 11.3 GB of
+weights, but at a 216,000-token context its KV cache adds
 roughly another 8 GB.
 
 That's why a 32B coding model I tried didn't fit at first. 
@@ -241,9 +248,9 @@ now is the 27B for real work, with 7B and 14B Qwen coders
 for quick jobs. The full list of what I tried, and why,
 is in the repo.
 
-It isn't perfect, though. I had to unplug two of my 
-three external monitors while the model runs, because 
-with all three connected I got constant display 
+It isn't perfect, though. I had to turn off two of my 
+three external monitors while the model runs, to save GPU. 
+With all three connected I got constant display 
 resets and flickering.
 
 ## Was it worth it?
@@ -265,4 +272,4 @@ Everything I left out, from the exact commands and logs to
 the diagnostic scripts and the full benchmark numbers, is 
 in the repo: [laptop-egpu-llm on GitHub](https://github.com/leonarduk/laptop-egpu-llm).
 
-<!-- Image: screenshot showing both GPUs detected (the current Medium draft uses an LM Studio screenshot; consider a Kun Desktop one). -->
+<!-- Photo. Caption: "LM Studio showing the two GPUs" (still in the Medium draft) -->
