@@ -171,13 +171,18 @@ variable nearly tripled the speed.
 
 ## The memory you don't see: the KV cache
 
-The download size of a model is not what it needs to run. 
-On top of the weights, every model needs a KV cache: its 
-working memory for the conversation, holding everything 
-it has read so far. The cache grows with the context length,
-and Ollama reserves the full amount the moment the model 
-loads, whether you use it or not. My 27B model is 11.3 GB
-of weights, but at a 216,000-token context its KV cache adds
+The download size of a model is not what it needs to run. On
+top of the weights, every model needs a KV cache. KV stands
+for key-value. For every token the model reads, it works out
+two lists of numbers, a key and a value, that its attention
+step uses to look back over the conversation when choosing
+the next word. Rather than recalculate them for the whole
+conversation every time, it keeps them. That store is the KV
+cache: in effect, the model's working memory for the
+conversation. The cache grows with the context length, and
+Ollama reserves the full amount the moment the model loads,
+whether you use it or not. My 27B model is 11.3 GB of
+weights, but at a 216,000-token context its KV cache adds
 roughly another 8 GB.
 
 That's why a 32B coding model I tried didn't fit at first. 
@@ -267,3 +272,4 @@ Everything I left out, from the exact commands and logs to
 the diagnostic scripts and the full benchmark numbers, is 
 in the repo: [laptop-egpu-llm on GitHub](https://github.com/leonarduk/laptop-egpu-llm).
 
+<!-- Photo. Caption: "LM Studio showing the two GPUs" (still in the Medium draft) -->
