@@ -53,11 +53,16 @@ something goes wrong:
 desktop card it installs a *desktop* driver at a different version from your laptop's
 driver, and only one card will work (step 6 explains why).
 
-- Pro/Enterprise: Group Policy, *Computer Configuration → Administrative Templates →
-  Windows Components → Windows Update → Do not include drivers with Windows Update →
-  Enabled*.
-- Home: set `ExcludeWUDriversInQualityUpdate` (DWORD) = `1` under
-  `HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate`.
+```powershell
+.\diagnostics\Disable-WindowsUpdateDrivers.ps1            # show the current state
+.\diagnostics\Disable-WindowsUpdateDrivers.ps1 -Apply     # elevated: stop driver updates
+```
+
+It sets the Group Policy *Do not include drivers with Windows Updates*
+(`ExcludeWUDriversInQualityUpdate` = 1, which also works on Home editions) and the device
+installation setting to never fetch drivers from Windows Update. `-Undo` reverts both.
+On this machine, Windows Update installed the mismatched desktop driver 16 minutes after
+the eGPU was first detected.
 
 ## 4. Connect the hardware
 
@@ -109,7 +114,21 @@ the working driver first, then cannot replace the locked driver file, leaving th
 card with no driver. With the eGPU unplugged, the desktop installer refuses to run at all.
 The full log trail is in [`driver-fix-walkthrough.md`](driver-fix-walkthrough.md).
 
-Install with `pnputil` instead:
+Install with `pnputil` instead. **The short way:** `Update-NvidiaDriver.ps1` does steps
+1–5 for you. It downloads the version pinned in
+[`diagnostics/nvidia-driver.json`](../diagnostics/nvidia-driver.json), checks NVIDIA's
+signature, picks the INF for each of your GPUs (including an unplugged eGPU) and installs
+them:
+
+```powershell
+.\diagnostics\Update-NvidiaDriver.ps1 -DownloadOnly   # any time; the cards can be running
+.\diagnostics\Update-NvidiaDriver.ps1 -Plan           # which INF for which GPU
+.\diagnostics\Update-NvidiaDriver.ps1                 # elevated, cards released (step 4)
+```
+
+It keeps the installer in `%LOCALAPPDATA%\nvidia-driver\<version>`, so the exact version
+stays on the machine. It lists leftover NVIDIA packages at the end but does not remove
+them; do that as in step 7. The long way, by hand:
 
 1. **Download one current driver version.** The desktop package (e.g.
    `616.92-desktop-win10-win11-64bit-international-dch-whql.exe`) also contains the OEM
@@ -277,7 +296,10 @@ Expected on this build: `qwen3.8-216k` 100% GPU at ~25.6 tok/s; `qwen2.5-coder:1
   per model; start fresh chats for side questions.
 - **Monitors:** on this build, three external monitors plus the LLM caused display resets
   and flickering; two were turned off while the model runs.
-- **Driver updates:** repeat step 6 with the new version. Do not let Windows Update do it.
+- **Driver updates:** change the version in `diagnostics/nvidia-driver.json` and run
+  `Update-NvidiaDriver.ps1` (step 6). Now and then, check that
+  `Disable-WindowsUpdateDrivers.ps1` still reports driver updates off: a Windows feature
+  update or an organisation policy can reset it.
 
 ## Troubleshooting
 

@@ -29,7 +29,7 @@ Check for it:
 .\diagnostics\Test-DriverConflict.ps1
 ```
 
-Fix: install one driver version covering both device IDs, using [`Install-NvidiaDriver.ps1`](diagnostics/Install-NvidiaDriver.ps1).
+Fix: install one driver version covering both device IDs. [`Update-NvidiaDriver.ps1`](diagnostics/Update-NvidiaDriver.ps1) downloads the version pinned in [`nvidia-driver.json`](diagnostics/nvidia-driver.json), checks NVIDIA's signature, picks the INF for each GPU and installs them via [`Install-NvidiaDriver.ps1`](diagnostics/Install-NvidiaDriver.ps1). Then stop it happening again with [`Disable-WindowsUpdateDrivers.ps1`](diagnostics/Disable-WindowsUpdateDrivers.ps1) `-Apply`: on this machine Windows Update installed the mismatched driver 16 minutes after the eGPU first appeared.
 
 ### 2. Hot-plugging an eGPU gives you Code 12
 
