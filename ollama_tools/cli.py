@@ -24,6 +24,7 @@ from .client import OllamaClient, OllamaUnavailable
 from .coder_model import CODER_FALLBACK, coder_model_for_budget
 from .envfile import models_to_check, read_env_file, role_models
 from .fit import DEFAULT_HEADROOM_PERCENT, judge
+from .general_model import GENERAL_FALLBACK, general_model_for_budget
 from .gpu import CONSERVATIVE, GIB, GpuUnavailable, STRATEGIES, budget_bytes, query_gpus
 
 OK, DOES_NOT_FIT, CANNOT_ANSWER = 0, 1, 2
@@ -267,6 +268,20 @@ def _coder_model(args) -> int:
     return OK
 
 
+def _general_model(args) -> int:
+    try:
+        gpus = query_gpus()
+    except GpuUnavailable as exc:
+        print(f"{exc}. Falling back to the smallest general model.")
+        print(GENERAL_FALLBACK)
+        return OK
+
+    budget = _describe_gpus(gpus, args.strategy)
+    model = general_model_for_budget(budget)
+    print(f"\ngeneral model: {model}")
+    return OK
+
+
 def _bench(args) -> int:
     code = _check(args)
     if code != OK:
@@ -389,6 +404,14 @@ def build_parser() -> argparse.ArgumentParser:
     coder_model.add_argument("--strategy", choices=STRATEGIES, default=CONSERVATIVE)
     add_common(coder_model)
     coder_model.set_defaults(func=_coder_model)
+
+    general_model = subparsers.add_parser(
+        "general-model",
+        help="pick the general-purpose model that fits the VRAM attached right now (always exits 0)",
+    )
+    general_model.add_argument("--strategy", choices=STRATEGIES, default=CONSERVATIVE)
+    add_common(general_model)
+    general_model.set_defaults(func=_general_model)
 
     stop = subparsers.add_parser("stop", help="unload to reclaim VRAM; the server stays up")
     stop.add_argument("model", nargs="*")
