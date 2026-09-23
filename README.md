@@ -90,17 +90,26 @@ ollama-tools ps                          # what is holding VRAM, and how much re
 ollama-tools stop --all                  # free it without stopping the server
 ollama-tools bench qwen2.5-coder:7b --repeat 3
 ollama-tools coder-model                 # which coder model fits the VRAM attached right now
+ollama-tools general-model               # which general-purpose model fits the VRAM attached right now
 ```
 
-`coder-model` picks from measured results, not advertised size: `qwen3.8-216k`
+`coder-model` picks from measured results, not advertised size: `qwen2.5-coder:32b`
 for both cards, `qwen2.5-coder:7b` for the internal 8 GB card alone,
 `qwen2.5-coder:1.5b` at 3 GB, `qwen2.5-coder:0.5b` otherwise (including no
 GPU detected at all). See [`ollama_tools/coder_model.py`](ollama_tools/coder_model.py)
 for the tier boundaries, and use `ollama_tools.coder_model.get_coder_model()`
 directly if another project wants this decision without shelling out.
-Unlike every other subcommand, `coder-model` never refuses and always exits
-**0** — it always has a fallback answer, down to "no GPU at all", so the
-exit-code contract below does not apply to it.
+
+`general-model` is the same idea for chat/reasoning work: `qwen3.8-216k` for
+both cards, `qwen3.5:9b` for the internal 8 GB card alone, `gemma3:4b`
+otherwise (including no GPU detected at all). See
+[`ollama_tools/general_model.py`](ollama_tools/general_model.py) for the tier
+boundaries, and use `ollama_tools.general_model.get_general_model()` directly
+if another project wants this decision without shelling out.
+
+Unlike every other subcommand, `coder-model` and `general-model` never refuse
+and always exit **0** — they always have a fallback answer, down to "no GPU
+at all", so the exit-code contract below does not apply to them.
 
 Exit codes are the contract for every other subcommand, so they can gate a script: **0** fine · **1** does not fit, nothing loaded · **2** the question could not be answered (no `nvidia-smi`, server down, model not pulled), also nothing loaded.
 

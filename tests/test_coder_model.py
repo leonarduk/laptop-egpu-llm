@@ -16,13 +16,13 @@ THREE_GB = Gpu(0, "some 3 GB card", 3 * 1024 * MIB, 3 * 1024 * MIB)
 ONE_GB = Gpu(0, "tiny card", 1024 * MIB, 1024 * MIB)
 
 
-def test_both_egpus_pick_qwen3():
+def test_both_egpus_pick_32b():
     budget = 18 * GIB
-    assert coder_model_for_budget(budget) == "qwen3.8-216k"
+    assert coder_model_for_budget(budget) == "qwen2.5-coder:32b"
 
 
-def test_just_below_qwen3_tier_falls_to_7b():
-    """18 GiB matches the docstring's "~18-19 GB total" for qwen3.8-216k;
+def test_just_below_32b_tier_falls_to_7b():
+    """18 GiB matches the docstring's "~18.5 GB" for qwen2.5-coder:32b;
     one byte under that must not promote it."""
     assert coder_model_for_budget(18 * GIB - 1) == "qwen2.5-coder:7b"
 
@@ -50,8 +50,8 @@ def test_below_3gb_falls_back_to_0_5b():
 def test_get_coder_model_uses_conservative_budget_of_both_cards():
     model = get_coder_model(CONSERVATIVE, [INTERNAL_8GB, EGPU_16GB])
     # conservative caps an asymmetric pair at 2x the smaller card, so this
-    # stays below the 18 GB qwen3.8-216k tier even though free VRAM sums to
-    # ~23 GB.
+    # stays below the 18 GB qwen2.5-coder:32b tier even though free VRAM
+    # sums to ~23 GB.
     assert model == "qwen2.5-coder:7b"
 
 
