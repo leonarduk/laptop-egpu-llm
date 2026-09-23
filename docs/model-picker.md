@@ -9,10 +9,15 @@ the eGPU is attached and how the runtime splits across cards.
 | Both cards, even split | **~15.9 GB** | Both attached, runtime splitting evenly — `2 x 7.93` |
 | Both cards, proportional | **~23.8 GB** | Both attached, runtime placing in proportion to free memory |
 
+Units: `ollama` reports decimal GB, `nvidia-smi` reports MiB (binary), and the
+`ollama-tools` CLI and its tier tables use GiB (1 GiB = 1024 MiB = 1.074 GB). The GB
+figures in this doc are decimal: the even-split ~15.9 GB is ~14.8 GiB, and
+`qwen3.8-216k` at 19.29 GB is 17.97 GiB.
+
 The middle row is the trap. An even split caps you at twice the *smaller*
 card however big the other one is, so the 16 GB card sits half empty — see
 [`lmstudio-multi-gpu.md`](lmstudio-multi-gpu.md) for changing Strategy away
-from "Split evenly". `Test-ModelFits.ps1` assumes the middle row by default,
+from "Split evenly". `ollama-tools fit` assumes the middle row by default (`--strategy conservative`),
 because guessing high is what hangs the machine.
 
 ## The arithmetic, which does not go stale
@@ -42,13 +47,14 @@ should be leaving anyway.
 - `Q8_0` KV quantisation roughly halves it for negligible quality cost; `Q4_0` quarters it.
 
 Rule of thumb: budget 15–20% on top at ordinary context, 35–50% at long
-context. That is exactly what `-HeadroomPercent` is for.
+context. That is exactly what `ollama-tools fit --headroom` is for.
 
 ## What to run per tier
 
 Sizes are what fits. Which model is *best* at a size changes every few
 months, so treat the names as "worth trying, then benchmark", not a
-ranking — this repo has no benchmarks of its own yet.
+ranking. What was actually measured here is in
+[Models tried on this machine](#models-tried-on-this-machine).
 
 ### Internal only — 7.93 GB
 
@@ -71,7 +77,7 @@ once headroom is counted.
 | Job | Size to aim for | On this machine |
 |---|---|---|
 | Coder | 14B at Q4 | `qwen2.5-coder:14b` (8.37 GB) |
-| General | 27B at IQ3, *short context only* | `qwen3.8-64k` at a `num_ctx` under ~30k, ordinary context (11.29 + 20% = 13.5 GB) |
+| General | 27B at IQ3, *reduced context* | `qwen3.8-100k` (~15 GB total with a `q4_0` KV cache, measured 100% GPU under Ollama). **Tight** against this tier's ~15.9 GB even-split budget: well under the 15-20% headroom rule, so only if nothing else is using the cards |
 
 A model's KV cache is reserved for its manifest's `num_ctx` on every load,
 whether or not a given prompt is anywhere near that long — see
@@ -125,7 +131,7 @@ the specialist model might have. That quality edge was never measured here.
 ## Model families worth trying
 
 Current as of September 2026 and **not benchmarked here** — verify before
-trusting, and prefer whatever your own `Measure-ModelSpeed.ps1` numbers say.
+trusting, and prefer whatever your own `ollama-tools bench` numbers say.
 
 - **Coding**: Qwen2.5-Coder (1.5B/7B/14B/32B) is the reliable spread across every tier here. DeepSeek-Coder-V2-Lite and Codestral are the usual alternatives to compare against.
 - **General / reasoning**: the Qwen3 line, Llama 3.x, Gemma 3, Mistral Small. Reasoning models (`deepseek-r1` and kin) spend many more tokens per answer, so judge them on time-to-answer, not tokens/sec.
@@ -136,12 +142,12 @@ trusting, and prefer whatever your own `Measure-ModelSpeed.ps1` numbers say.
 ## Checking before you load
 
 ```powershell
-.\diagnostics\Test-ModelFits.ps1 -Model qwen3.8-216k:latest
-.\ollama\Start-Model.ps1 -Model qwen3.8-216k:latest     # fit-checked launch
+ollama-tools fit qwen3.8-216k --strategy proportional     # check only, loads nothing
+ollama-tools start qwen3.8-216k --strategy proportional   # fit-checked launch
 ```
 
 `qwen3.8-216k` is a locally rebuilt tag (`ollama create` with `num_ctx 216000`
-against the `qwen3.8-64k` base pull), not something `ollama pull` will fetch by
+`FROM logicbeat/qwen3.8-27B_GSQ_RCO`, the base pull), not something `ollama pull` will fetch by
 that name. If it's missing on a machine, that means the tag was never built
 there, not that the model failed to fit — see
 [`ollama-multi-gpu.md`](ollama-multi-gpu.md) for how the context ceiling was

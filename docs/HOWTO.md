@@ -147,8 +147,8 @@ Install with `pnputil` instead:
    ```
 
    Each INF can take several minutes; it has not hung. The desktop INF binds to the eGPU
-   even while it is unplugged. **Read the output and make sure both installs succeeded**
-   before going on: the script does not yet stop on a failed install.
+   even while it is unplugged. The script stops if an install fails. Add `-WhatIf` first
+   to see what it would do.
 6. Re-enable the laptop card, plug the enclosure back in and **Restart**.
 7. **Only once both cards work on the new version**, remove the old mismatched package by
    its *published* name (`oemNNN.inf`, from `Get-GpuState.ps1`), elevated:
@@ -158,8 +158,10 @@ Install with `pnputil` instead:
    pnputil /delete-driver oem268.inf /uninstall
    ```
 
-   Don't do this in the same step as the install: if the install had failed, deleting the
-   old package would leave a card with no driver at all.
+   Doing this as a separate step, after checking both cards, means a bad install can never
+   leave a card with no driver. (`Install-NvidiaDriver.ps1 -RemoveStaleInf oem268.inf` does
+   the same, only after the installs succeed, and checks the package is an NVIDIA display
+   driver and asks for confirmation first.)
 8. **Verify:**
 
    ```powershell
@@ -251,9 +253,10 @@ ollama-tools ps                                          # expect 100% GPU
 ollama-tools bench qwen3.8-100k --repeat 3               # tok/s and offload
 ```
 
-`fit` sizes a model from its file size plus headroom (20% by default). It does not yet add
-the KV cache for a large `num_ctx`, so for the long-context tags trust `ollama-tools ps`
-(100% GPU) over `fit`.
+`fit` sizes a model as its weights plus headroom (20% by default) plus an estimate of the KV
+cache for the model's `num_ctx`, using the `OLLAMA_KV_CACHE_TYPE` and `OLLAMA_NUM_PARALLEL`
+in *your shell*. It assumes the server was started with the same values, so set them in
+both. The estimate is still an estimate: `ollama-tools ps` showing 100% GPU is the real test.
 
 Use `--strategy proportional` on two unequal cards: the default `conservative` budget
 assumes an even split (twice the smaller card, ~15.9 GB here) and will refuse models that
