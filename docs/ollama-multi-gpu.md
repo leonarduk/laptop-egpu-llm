@@ -174,3 +174,29 @@ the actually-used context with `PARAMETER num_ctx`. Check `ollama show <model>
 --parameters`, not just `--modelfile`'s base architecture line, to know what a
 given tag actually runs at. `OLLAMA_CONTEXT_LENGTH=0` (the default, unset) means
 "use whichever of those two applies" — it does not mean "no limit".
+
+## `OLLAMA_NUM_PARALLEL`: each parallel slot is a full KV cache
+
+Measured 2026-09-23 with `OLLAMA_NUM_PARALLEL=2` plus the three settings above. Check the
+server log's `n_slots` line to see what a load actually got; the env var is a request, not a
+guarantee.
+
+| Model | Result |
+|---|---|
+| `qwen3.8-100k` (27B, `qwen35` arch, `num_ctx 100000`) | Ollama logs `model architecture does not currently support parallel requests architecture=qwen35` and loads with `n_slots = 1`. 100% GPU, 15 GB total, KV cache 1.76 GB. A second request queues. |
+| `MHKetbi/Qwen2.5-Coder-32B-Instruct:q4_K_S` (`qwen2` arch) | `n_slots = 2`, 32,768 context per slot, KV cache 4.6 GB (2/2 seqs). 24 GB total, **15%/85% CPU/GPU**. |
+
+Two consequences:
+
+- For the hybrid `qwen35` models, parallel chats are not available at all, so shrinking
+  `num_ctx` to "make room for two chats" only frees VRAM for a second model.
+- For models that do support it, `OLLAMA_NUM_PARALLEL=2` doubles the KV cache and can push
+  a model that fitted off the GPU. Leave it at 1 unless you genuinely serve concurrent requests.
+
+That 32B tag's manifest sets `num_ctx 131072`, but its architecture's trained context is
+32,768 and Ollama loaded it at 32,768 per slot.
+
+**If `OLLAMA_MODELS` seems ignored:** the Windows tray app (`ollama app.exe`) starts its own
+server using its own model-location setting (`C:\Users\<you>\.ollama\models` by default),
+not the `OLLAMA_MODELS` user variable. Start `ollama serve` from a shell that has the
+variables set, or change the location in the app's settings.

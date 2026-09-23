@@ -92,7 +92,15 @@ That's why the 32B coding model didn't fit at first. The KV cache pushed it over
 
 ### More than one chat
 
-The cache is per conversation. Every chat the model is answering at the same time gets its own full-size KV cache. When I tried LM Studio, its log showed four parallel slots, each reserving a full context, so it was setting aside four times the memory I thought I needed. Unless you genuinely have several chats or tools hitting the model at the same moment, set parallel slots to 1 (`OLLAMA_NUM_PARALLEL=1` in Ollama) and the cache shrinks accordingly.
+The cache is per conversation. Every chat the model is answering at the same time gets its own full-size KV cache. When I tried LM Studio, its log showed four parallel slots, each reserving a full context, so it was setting aside four times the memory I thought I needed.
+
+I do want two chats going at once, so I set `OLLAMA_NUM_PARALLEL=2` and rebuilt my 27B model with a 100,000-token context instead of 216,000. Two chats at 100k should cost about the same memory as one at 216k. (Ollama only reads its settings when it starts, so restart it after changing them.)
+
+Then I read the Ollama log. It said the model's architecture "does not currently support parallel requests". My 27B model is a hybrid design where only some of its layers use a normal KV cache, and Ollama won't run two chats on it at once. The second chat just waits its turn. The rebuild wasn't wasted, though. At 100k the whole model takes 15 GB instead of 19 GB, still entirely on the graphics cards, and its KV cache is only 1.7 GB of that. That leaves room for a second, smaller model alongside it.
+
+On a model that does support parallel chats, the setting bites the other way. A 32B coding model I tried went from one cache to two, 4.6 GB of cache in total, and 15% of the model got pushed back onto the CPU.
+
+So parallel chats cost a full cache each. Check the log to see what you actually got, and only turn it on if you'll really use it.
 
 The same goes for running different models side by side, say a coding model in one chat and a general one in another. Each loaded model needs its own weights and its own cache, and they all have to share the same 24 GB.
 
