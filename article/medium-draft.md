@@ -1,4 +1,4 @@
-# How I triple the graphics memory on my laptop to get a local LLM with a 200k context window
+# How I tripled the graphics memory on my laptop to get a local LLM with a 200k context window
 
 Like many, I love Claude Code. I also keep running out of tokens. 
 Even on Claude Max I am burning through my tokens quickly, 
@@ -12,7 +12,7 @@ My laptop, a Lenovo Legion 5, has an RTX 5070
 with 8 GB. For local LLMs that is peanuts: 24 GB is closer
 to where things get interesting.
 
-Then I read [The 16GB threshold](https://augmentedmind.substack.com/p/the-16gb-threshold), which 
+Then I read Manolo Remiddi's [The 16GB threshold](https://augmentedmind.substack.com/p/the-16gb-threshold), which 
 shows a "budget" 16 GB graphics card running a genuinely useful 
 local model. The problem with laptops is that you can't 
 upgrade the graphics card. 
@@ -21,7 +21,7 @@ Or so I thought. It turns out all you need is a massive
 ugly black box and a big enough desk. Buy an RTX 5060 Ti 
 with 16 GB, put it in a Razer Core X V2 enclosure, 
 plug it into the laptop over USB4, and use both cards 
-together: 8 + 16 = 24 GB. One better than the article.
+together: 8 + 16 = 24 GB. 8 GB more than the article.
 
 <!-- Photo: the setup. Caption: "Big ugly box on left hand side, two monitors off to save GPU, and Kun working on an issue with my local LLM" -->
 
@@ -80,9 +80,10 @@ Something else was going on.
 I checked which driver each card was actually using, and 
 there it was: two different NVIDIA driver packages, at two 
 different versions. The laptop card had 616.92. The new card 
-had 591.86, which was about eight months older. I can't prove
-it, but almost certainly Windows Update had quietly installed 
-it the first time it saw the new card.
+had 591.86, which was about eight months older. Windows'
+setup log shows where it came from: sixteen minutes after the
+new card first appeared, Windows Update installed its own,
+older desktop driver for it.
 
 That matters because both packages contain the same core 
 driver file, and Windows can only load one copy of it. 
@@ -132,8 +133,11 @@ won't run. Lovely.
 The way out was to skip NVIDIA's installer altogether and 
 use `pnputil`, the tool built into Windows for adding driver
 packages. It doesn't check what hardware is plugged in,
-and it doesn't try to be clever. With the eGPU unplugged 
-and nothing holding the driver:
+and it doesn't try to be clever. The `.inf` files come from
+NVIDIA's own download, which is really an archive: Windows'
+built-in `tar` (or 7-Zip) unpacks it, and they are in the
+`Display.Driver` folder. With the eGPU unplugged, nothing
+holding the driver, and in an administrator PowerShell:
 
 ```powershell
 pnputil /add-driver nvlti.inf /install      # the laptop card
@@ -146,7 +150,8 @@ was assigned to the 5060 Ti even though it wasn't plugged
 in. Windows remembered the card, so it would get the right 
 driver the moment it came back.
 
-I plugged the enclosure back in, restarted, and:
+I plugged the enclosure back in, restarted, and asked
+`nvidia-smi --query-gpu=index,name,driver_version,memory.total --format=csv`:
 
 ```text
 0, NVIDIA GeForce RTX 5070 Laptop GPU, 616.92,  8151 MiB
@@ -157,11 +162,11 @@ Both cards, same driver, 24 GB between them. Finally.
 
 ## What 24 GB actually buys
 
-Getting Windows to see both cards turned out to be only half the battle. I dropped LM Studio, which kept failing: it wouldn't use the two GPUs properly and fell over above 8 GB. Now I run Ollama. I also use Kun Desktop, a sort of Claude Desktop replacement that can use Ollama for its models. It's mostly for DeepSeek and local LLMs.
+Getting Windows to see both cards turned out to be only half the battle. I dropped LM Studio, which couldn't split models across both GPUs properly and failed on anything over 8 GB. With hindsight it was probably its defaults: it splits a model evenly across unequal cards, and reserves memory for four chats at once. Both are fixable (the repo has the settings), but by then I'd moved to Ollama. For a front end I use Kun Desktop, a sort of Claude Desktop replacement that can use Ollama for its models; I use it mostly with DeepSeek and local LLMs.
 
-<!-- Photo. Caption: "Kun desktop running a local 27b model, quantized of course" -->
+<!-- Photo. Caption: "Kun Desktop running a local 27B model, quantised of course" -->
 
-Left to itself, Ollama still put a 14B coding model mostly on one card and spilled the rest into normal memory: 14 tokens a second. One setting, `OLLAMA_SCHED_SPREAD=1`, told it to spread the model across both cards, and it jumped to 38 tokens a second. Hours of driver work, and then one environment variable nearly tripled the speed.
+Left to itself, Ollama loaded a 14B coding model (Qwen2.5-Coder 14B) onto just one card, got only 62% of it into graphics memory and put the rest in normal memory: 14 tokens a second. One setting, `OLLAMA_SCHED_SPREAD=1`, told it to spread the model across both cards, and it jumped to 38 tokens a second. Hours of driver work, and then one environment variable nearly tripled the speed.
 
 ## The memory you don't see: the KV cache
 
@@ -171,7 +176,7 @@ Take "The eGPU was slow because it was on a cheap cable." When the model reaches
 
 The cache grows with the context length, and Ollama reserves the full amount the moment the model loads, whether you use it or not. My main model, a 27B Qwen 3.x squeezed down to 3-bit quantisation, is 11.3 GB of weights, but at a 216,000-token context it takes about 19 GB in total: the cache plus the working space around it.
 
-The fix is to store the cache at lower precision. Turn on flash attention (`OLLAMA_FLASH_ATTENTION=1`, which the next setting needs), then `OLLAMA_KV_CACHE_TYPE=q8_0` roughly halves the cache for a negligible quality cost, and `q4_0` quarters it. On a 32B coding model I tried, that took it from 72% on the cards at 7.8 tokens a second, to 83% at 10.3, to 92% at 13.2.
+The fix is to store the cache at lower precision. Turn on flash attention (`OLLAMA_FLASH_ATTENTION=1`, which the next setting needs), then `OLLAMA_KV_CACHE_TYPE=q8_0` roughly halves the cache for a negligible quality cost. `q4_0` quarters it, but that does cost some quality, more so at long contexts; I use it for the room, and `q8_0` is the safer choice if answers get worse. On a 32B coding model I tried (Qwen2.5-Coder 32B), going from the default full-precision cache to `q8_0` to `q4_0` took it from 72% on the cards at 7.8 tokens a second, to 83% at 10.3, to 92% at 13.2.
 
 ### More than one chat
 
@@ -179,20 +184,29 @@ The cache is per conversation: every chat a model answers at the same time gets 
 
 Then I read the Ollama log. My 27B model is a hybrid design, and Ollama "does not currently support parallel requests" for it, so the second chat just waits its turn. The rebuild wasn't wasted, though: at 100k the model takes 15 GB instead of 19 GB, leaving room for a second, smaller model alongside it. On the 32B model, which does support parallel chats, the second cache pushed 15% of the model back onto the CPU. So I've set it back to one. The details are in the how-to guide linked at the end.
 
-With those three settings (spread across both cards, flash attention and the smaller cache) I'm running the 27B model with room for a 216,000-token context, entirely on the graphics cards, at about 25 tokens a second. On a laptop. Next to a big ugly black box that doubles as a small fan heater for me.
+These are my final Ollama settings, set as Windows user environment variables (restart Ollama after changing them):
+
+```text
+OLLAMA_SCHED_SPREAD=1         # spread a model across both cards
+OLLAMA_FLASH_ATTENTION=1      # needed for the smaller cache
+OLLAMA_KV_CACHE_TYPE=q4_0     # quarter-size KV cache
+OLLAMA_NUM_PARALLEL=1         # one chat at a time, one cache
+```
+
+With those, I run the 27B model at its 216,000-token context day to day, entirely on the graphics cards, at about 25 tokens a second. The 100k version is there for when I want a second model loaded alongside it. On a laptop. Next to a big ugly black box that doubles as a small fan heater for me.
 
 In the end I deleted the 32B coding model. It was stuck at a 32,000-token context, only got 92% onto the cards even with the smaller cache, and ran at half the speed of the 27B. Coding tools read whole files and long conversations, so context wins. My line-up now is the 27B for real work, with 7B and 14B Qwen coders for quick jobs. The full list of what I tried, and why, is in the repo.
 
-It isn't perfect, though. I had to turn off two of my three external monitors while the model runs, to save GPU. With all three connected I got constant display resets and flickering.
+It isn't perfect, though. 8 + 16 isn't one clean 24 GB pool: the laptop's own card also runs Windows and my displays. With all three external monitors connected I got constant display resets and flickering while a model ran, so I turn two of them off.
 
 ## Was it worth it?
 
-For inference, yes. People worry that USB4 is too slow for an external card. I haven't measured it, but the way these tools split a model across cards, very little data should need to cross the cable while it runs. What matters is getting the whole model into graphics memory, and that's exactly what the second card buys you.
+For inference, yes. People worry that USB4 is too slow for an external card. I haven't measured it, but the way these tools split a model across cards, very little data should need to cross the cable while it runs. Where I'd expect the cable to show is loading a model, which means copying gigabytes of weights across it. What matters is getting the whole model into graphics memory, and that's exactly what the second card buys you.
 
 But it is a hobbyist project, and if you try it, 
 the three things I'd tell you are:
 
-- **If only one NVIDIA card works at a time, check the driver versions first.** Then stop Windows Update from installing drivers, or it will do it again.
+- **If only one NVIDIA card works at a time, check the driver versions first.** Then stop Windows Update from installing drivers (Group Policy: *Do not include drivers with Windows Update*), or it will do it again.
 - **Boot with the enclosure attached, and use Restart, not Shut down.**
 - **Budget for the KV cache, not just the model's download size.** Quantise it, and keep parallel chats to what you actually use.
 
