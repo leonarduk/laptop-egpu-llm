@@ -501,7 +501,11 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument(
             "--kv-cache-type",
             choices=sorted(KV_CACHE_TYPES),
-            help="the server's KV cache type, instead of this shell's OLLAMA_KV_CACHE_TYPE",
+            help=(
+                "the KV cache type the server actually uses, instead of this shell's "
+                "OLLAMA_KV_CACHE_TYPE. Ollama only uses a quantised cache with flash "
+                "attention on, so pass f16 if the server has it off"
+            ),
         )
         if with_model == "optional":
             # fit only: start and bench load at the Modelfile's num_ctx, so an

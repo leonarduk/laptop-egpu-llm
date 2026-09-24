@@ -556,14 +556,16 @@ def test_num_ctx_flag_sizes_a_context_before_the_rebuild(wire, capsys, qwen35_sh
     assert "num_ctx 50000 (--num-ctx)" in capsys.readouterr().out
 
 
-def test_start_refuses_when_the_stated_slots_do_not_fit(wire, qwen35_show):
+@pytest.mark.parametrize("command", ["start", "bench"])
+def test_start_and_bench_honour_parallel(wire, command, qwen35_show):
+    """One q4_0 slot fits the conservative budget; four do not. Checked
+    through the fit check alone (it refuses before anything loads), so the
+    verdict can only have flipped on --parallel."""
     wire(_qwen35(qwen35_show), gpus=[LAPTOP_8GB, EGPU_16GB])
-    assert run(["start", "qwen3.8-100k", "--parallel", "4"]) == cli.DOES_NOT_FIT
-
-
-def test_bench_refuses_when_the_stated_slots_do_not_fit(wire, qwen35_show):
-    wire(_qwen35(qwen35_show), gpus=[LAPTOP_8GB, EGPU_16GB])
-    assert run(["bench", "qwen3.8-100k", "--parallel", "4"]) == cli.DOES_NOT_FIT
+    base = ["fit", "qwen3.8-100k", "--kv-cache-type", "q4_0"]
+    assert run(base) == cli.OK
+    argv = [command, "qwen3.8-100k", "--kv-cache-type", "q4_0", "--parallel", "4"]
+    assert run(argv) == cli.DOES_NOT_FIT
 
 
 @pytest.mark.parametrize("command", ["start", "bench"])
