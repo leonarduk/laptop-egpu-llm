@@ -1,6 +1,6 @@
 # How to build it: a laptop plus an eGPU for local LLMs
 
-The step-by-step guide to the build in the [Medium article](../article/medium-draft.md): a
+The step-by-step guide to the build in the [Medium article](https://medium.com/@steveleonard11/how-i-tripled-the-graphics-memory-on-my-laptop-to-get-a-local-llm-with-a-200k-context-window-498c60591631) (source: [`article/medium-draft.md`](../article/medium-draft.md)): a
 laptop's own NVIDIA GPU and a desktop NVIDIA card in a USB4 enclosure, both working at once
 under Windows 11, running Ollama models across both.
 
