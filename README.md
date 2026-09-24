@@ -122,6 +122,27 @@ only the model name on stdout (diagnostics go to stderr), so
 
 Exit codes are the contract for every other subcommand, so they can gate a script: **0** fine · **1** does not fit, nothing loaded · **2** the question could not be answered (no `nvidia-smi`, server down, model not pulled), also nothing loaded.
 
+### Parallel chats
+
+`fit` adds the KV cache to the weights, and Ollama reserves a full `num_ctx`
+of it for every parallel slot. By default it reads `OLLAMA_NUM_PARALLEL`,
+`OLLAMA_KV_CACHE_TYPE` and `OLLAMA_CONTEXT_LENGTH` from the shell it runs in,
+which is only right if the Ollama server was started with the same values
+(often not the case on Windows; see
+[`docs/ollama-multi-gpu.md`](docs/ollama-multi-gpu.md)). To state the server's
+settings instead:
+
+```bash
+ollama-tools fit qwen3.8-100k --parallel 2 --kv-cache-type q4_0
+ollama-tools fit qwen3.8-100k --parallel 2 --kv-cache-type q4_0 --num-ctx 50000  # before rebuilding a tag
+ollama-tools start qwen3.8-100k --parallel 2 --kv-cache-type q4_0
+```
+
+`--parallel` and `--kv-cache-type` override the shell's environment variables.
+`--num-ctx` overrides the Modelfile's `num_ctx`, capped at the trained length,
+and is only on `fit`, because `start` and `bench` load at the Modelfile's
+context.
+
 There is deliberately no `--force`. If you believe a model fits because the runtime places layers proportionally, `--strategy proportional` says so in terms the check can act on. Otherwise the default assumes the even-split ceiling from point 3 above, so it will not claim 23.8 GB when your runtime can only reach 15.9 GB.
 
 First numbers from `ollama-tools bench`, **internal card only, eGPU detached**:

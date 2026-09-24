@@ -217,6 +217,14 @@ def test_a_non_integral_scalar_is_refused_not_truncated(key):
     assert "4.5" in str(caught.value)
 
 
+def test_num_ctx_override_beats_the_modelfile_and_is_capped(qwen35_show):
+    """fit --num-ctx: sizing a context before a tag is rebuilt with it."""
+    kv = estimate_kv_cache(qwen35_show, MACHINE_ENV, num_ctx=50000)
+    assert (kv.num_ctx, kv.ctx_source) == (50000, "--num-ctx")
+    kv = estimate_kv_cache(qwen35_show, MACHINE_ENV, num_ctx=1_000_000)
+    assert kv.num_ctx == 262144 and kv.ctx_source.startswith("--num-ctx, capped")
+
+
 def test_modelfile_num_ctx_beats_ollama_context_length(qwen35_show):
     """OLLAMA_CONTEXT_LENGTH is only the server's default for models that
     do not set num_ctx; a Modelfile PARAMETER num_ctx does set it."""

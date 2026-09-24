@@ -26,6 +26,7 @@ from .coder_model import CODER_FALLBACK, coder_model_for_budget
 from .envfile import models_to_check, read_env_file, role_models
 from .fit import (
     DEFAULT_HEADROOM_PERCENT,
+    KV_CACHE_TYPES,
     KvUnknown,
     estimate_kv_cache,
     judge,
@@ -53,6 +54,43 @@ def _non_negative_int(text: str) -> int:
     if value < 0:
         raise argparse.ArgumentTypeError(f"{value} is negative; headroom must be 0 or more")
     return value
+
+
+def _positive_int(text: str) -> int:
+    """argparse type for --parallel and --num-ctx: a usage error (exit 2)
+    for 0, negatives and non-numbers, not a silent fallback to 1."""
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a whole number") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"{value} must be at least 1")
+    return value
+
+
+def _kv_env(args) -> tuple[dict[str, str], str]:
+    """The environment the KV estimate reads, with any flags laid over this
+    shell's, and a note saying where the settings came from.
+
+    The flags exist because this shell's environment is only a stand-in for
+    the server's (docs/ollama-multi-gpu.md section 3): passing what the
+    server was actually started with beats hoping the two match."""
+    env = dict(os.environ)
+    overridden = []
+    if getattr(args, "parallel", None) is not None:
+        env["OLLAMA_NUM_PARALLEL"] = str(args.parallel)
+        overridden.append("--parallel")
+    if getattr(args, "kv_cache_type", None) is not None:
+        env["OLLAMA_KV_CACHE_TYPE"] = args.kv_cache_type
+        # Naming a quantised type is a statement that the server uses it,
+        # which it can only do with flash attention on.
+        env["OLLAMA_FLASH_ATTENTION"] = "1"
+        overridden.append("--kv-cache-type")
+    if overridden:
+        source = f"{' and '.join(overridden)} over this shell's environment"
+    else:
+        source = "read from this shell -- assumes the Ollama server was started with the same settings"
+    return env, source
 
 
 def _refuse(message: str, code: int) -> int:
@@ -141,11 +179,12 @@ def _check(args) -> int:
         print("Nothing to check.")
         return OK
 
-    env = os.environ
+    env, env_source = _kv_env(args)
+    num_ctx = getattr(args, "num_ctx", None)
     print(
         f"\nModels  (KV cache at OLLAMA_KV_CACHE_TYPE={kv_cache_type(env)} x "
-        f"OLLAMA_NUM_PARALLEL={num_parallel(env)}, read from this shell --\n"
-        "         assumes the Ollama server was started with the same settings)"
+        f"OLLAMA_NUM_PARALLEL={num_parallel(env)},\n"
+        f"         {env_source})"
     )
     verdicts = []
     # Collected rather than returned on: a multi-role config with one model
@@ -160,7 +199,7 @@ def _check(args) -> int:
             unpulled.append(name)
             print(f"  {name:<40} not pulled - size unknown")
             continue
-        kv, why_not = _kv_estimate(client, name, env)
+        kv, why_not = _kv_estimate(client, name, env, num_ctx)
         verdict = judge(name, sizes[name], budget, args.headroom, kv.bytes if kv else 0)
         verdicts.append(verdict)
         state = "fits" if verdict.fits else f"TOO BIG by {verdict.short_gib:.2f} GiB"
@@ -203,12 +242,12 @@ def _check(args) -> int:
     return OK
 
 
-def _kv_estimate(client: OllamaClient, name: str, env):
+def _kv_estimate(client: OllamaClient, name: str, env, num_ctx: int | None = None):
     """(estimate, None) or (None, why). Never raises: a model whose
     architecture cannot be read is still judged, on file size plus headroom
     as before, and the output says which of the two it got."""
     try:
-        return estimate_kv_cache(client.show(name), env), None
+        return estimate_kv_cache(client.show(name), env, num_ctx), None
     except OllamaUnavailable as exc:
         return None, f"/api/show failed: {exc}"
     except KvUnknown as exc:
@@ -447,9 +486,38 @@ def build_parser() -> argparse.ArgumentParser:
                 f"graph, CUDA context); default {DEFAULT_HEADROOM_PERCENT}. The KV "
                 "cache is estimated separately from /api/show, using this shell's "
                 "OLLAMA_KV_CACHE_TYPE, OLLAMA_NUM_PARALLEL and OLLAMA_CONTEXT_LENGTH "
-                "-- so it assumes the server runs with the same settings"
+                "-- so it assumes the server runs with the same settings, unless "
+                "--parallel / --kv-cache-type say otherwise"
             ),
         )
+        sub.add_argument(
+            "--parallel",
+            type=_positive_int,
+            help=(
+                "parallel slots to budget a full KV cache for, instead of this "
+                "shell's OLLAMA_NUM_PARALLEL; pass what the server runs with"
+            ),
+        )
+        sub.add_argument(
+            "--kv-cache-type",
+            choices=sorted(KV_CACHE_TYPES),
+            help=(
+                "the KV cache type the server actually uses, instead of this shell's "
+                "OLLAMA_KV_CACHE_TYPE. Ollama only uses a quantised cache with flash "
+                "attention on, so pass f16 if the server has it off"
+            ),
+        )
+        if with_model == "optional":
+            # fit only: start and bench load at the Modelfile's num_ctx, so an
+            # override there would pass a check the real load then fails.
+            sub.add_argument(
+                "--num-ctx",
+                type=_positive_int,
+                help=(
+                    "context per slot instead of the Modelfile's num_ctx, e.g. to "
+                    "size a tag before rebuilding it (capped at the trained length)"
+                ),
+            )
 
     check = subparsers.add_parser("fit", help="does it fit? (checks only, loads nothing)")
     add_fit_options(check)

@@ -133,7 +133,11 @@ def _int(info: Mapping[str, object], key: str) -> int | None:
 
 
 def _context(
-    show: Mapping[str, object], info: Mapping[str, object], arch: str, env: Mapping[str, str]
+    show: Mapping[str, object],
+    info: Mapping[str, object],
+    arch: str,
+    env: Mapping[str, str],
+    override: int | None = None,
 ) -> tuple[int, str]:
     """(num_ctx, where it came from), in Ollama's own order of precedence:
     the Modelfile, then OLLAMA_CONTEXT_LENGTH, then the built-in default --
@@ -143,9 +147,14 @@ def _context(
     OLLAMA_CONTEXT_LENGTH is only the server's *default*: Ollama applies it
     when neither the model nor the request sets num_ctx, and a Modelfile
     ``PARAMETER num_ctx`` is such a setting. (A per-request num_ctx would
-    override both, but ``fit`` has no request to read.)"""
-    num_ctx = _modelfile_num_ctx(show.get("parameters"))
-    source = "Modelfile"
+    override both, but ``fit`` has no request to read.) ``override`` stands
+    in for one: ``fit --num-ctx``, asking about a context before a tag is
+    rebuilt with it."""
+    if override is not None:
+        num_ctx, source = override, "--num-ctx"
+    else:
+        num_ctx = _modelfile_num_ctx(show.get("parameters"))
+        source = "Modelfile"
     if num_ctx is None:
         try:
             num_ctx = int((env.get("OLLAMA_CONTEXT_LENGTH") or "").strip())
@@ -203,7 +212,9 @@ def _kv_elements_per_token(info: Mapping[str, object], arch: str) -> tuple[int, 
     return elements, len(cached), blocks
 
 
-def estimate_kv_cache(show: Mapping[str, object], env: Mapping[str, str]) -> KvEstimate:
+def estimate_kv_cache(
+    show: Mapping[str, object], env: Mapping[str, str], num_ctx: int | None = None
+) -> KvEstimate:
     """KV cache bytes llama.cpp will reserve for this model, from an
     ``/api/show`` payload and the (client-side) Ollama environment.
 
@@ -225,7 +236,7 @@ def estimate_kv_cache(show: Mapping[str, object], env: Mapping[str, str]) -> KvE
         raise KvUnknown("/api/show returned no general.architecture")
 
     elements, kv_layers, blocks = _kv_elements_per_token(info, arch)
-    num_ctx, source = _context(show, info, arch, env)
+    num_ctx, source = _context(show, info, arch, env, num_ctx)
     parallel = num_parallel(env)
     requested = num_ctx * parallel
     cells = -(-requested // KV_CELL_PADDING) * KV_CELL_PADDING

@@ -506,3 +506,78 @@ def test_bench_read_failure_and_absent_model_say_different_things(wire, capsys):
 
     assert "Could not re-read" in failed and "no longer resident" not in failed
     assert "no longer resident" in absent and "Could not re-read" not in absent
+
+
+# --parallel / --kv-cache-type / --num-ctx: the server's settings, stated
+# rather than assumed from this shell's environment.
+
+
+def _qwen35(qwen35_show, weights=int(10.0 * GIB)):
+    return StubClient({"qwen3.8-100k:latest": weights}, show={"qwen3.8-100k:latest": qwen35_show})
+
+
+def test_kv_cache_type_flag_overrides_the_shell(wire, capsys, monkeypatch, qwen35_show):
+    """The shell says f16 (too big); the flag says what the server runs."""
+    monkeypatch.setenv("OLLAMA_KV_CACHE_TYPE", "f16")
+    wire(_qwen35(qwen35_show), gpus=[LAPTOP_8GB, EGPU_16GB])
+    assert run(["fit", "qwen3.8-100k"]) == cli.DOES_NOT_FIT
+    capsys.readouterr()
+    assert run(["fit", "qwen3.8-100k", "--kv-cache-type", "q4_0"]) == cli.OK
+    out = capsys.readouterr().out
+    assert "OLLAMA_KV_CACHE_TYPE=q4_0" in out
+    assert "--kv-cache-type over this shell's environment" in out
+
+
+def test_kv_cache_type_flag_wins_over_flash_attention_off(wire, monkeypatch, qwen35_show):
+    """Naming q4_0 says the server has flash attention on; the shell's
+    OLLAMA_FLASH_ATTENTION=0 must not silently turn it back into f16."""
+    monkeypatch.setenv("OLLAMA_FLASH_ATTENTION", "0")
+    wire(_qwen35(qwen35_show), gpus=[LAPTOP_8GB, EGPU_16GB])
+    assert run(["fit", "qwen3.8-100k", "--kv-cache-type", "q4_0"]) == cli.OK
+
+
+def test_parallel_flag_overrides_the_shell_and_multiplies_the_cache(wire, capsys, monkeypatch, qwen35_show):
+    """4 x 100k q4_0 slots is ~6.9 GiB of cache: fits the proportional
+    budget, not the conservative one."""
+    monkeypatch.setenv("OLLAMA_NUM_PARALLEL", "8")
+    wire(_qwen35(qwen35_show), gpus=[LAPTOP_8GB, EGPU_16GB])
+    base = ["fit", "qwen3.8-100k", "--parallel", "4", "--kv-cache-type", "q4_0"]
+    assert run(base) == cli.DOES_NOT_FIT
+    capsys.readouterr()
+    assert run(base + ["--strategy", "proportional"]) == cli.OK
+    out = capsys.readouterr().out
+    assert "OLLAMA_NUM_PARALLEL=4" in out
+    assert "4 slot(s)" in out
+
+
+def test_num_ctx_flag_sizes_a_context_before_the_rebuild(wire, capsys, qwen35_show):
+    wire(_qwen35(qwen35_show), gpus=[LAPTOP_8GB, EGPU_16GB])
+    assert run(["fit", "qwen3.8-100k", "--num-ctx", "50000", "--kv-cache-type", "q4_0"]) == cli.OK
+    assert "num_ctx 50000 (--num-ctx)" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("command", ["start", "bench"])
+def test_start_and_bench_honour_parallel(wire, command, qwen35_show):
+    """One q4_0 slot fits the conservative budget; four do not. Checked
+    through the fit check alone (it refuses before anything loads), so the
+    verdict can only have flipped on --parallel."""
+    wire(_qwen35(qwen35_show), gpus=[LAPTOP_8GB, EGPU_16GB])
+    base = ["fit", "qwen3.8-100k", "--kv-cache-type", "q4_0"]
+    assert run(base) == cli.OK
+    argv = [command, "qwen3.8-100k", "--kv-cache-type", "q4_0", "--parallel", "4"]
+    assert run(argv) == cli.DOES_NOT_FIT
+
+
+@pytest.mark.parametrize("command", ["start", "bench"])
+def test_num_ctx_is_fit_only(command):
+    """start and bench load at the Modelfile's num_ctx; an override there
+    would pass a check the real load then fails."""
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args([command, "m", "--num-ctx", "8192"])
+
+
+@pytest.mark.parametrize("flag", ["--parallel", "--num-ctx"])
+@pytest.mark.parametrize("value", ["0", "-1", "two"])
+def test_counts_must_be_positive_integers(flag, value):
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["fit", "m", flag, value])
