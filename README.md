@@ -46,7 +46,10 @@ With GPUs of different sizes, an **even split caps usable VRAM at twice the smal
 Driver and enclosure diagnosis is Windows-only — `Get-PnpDevice`, `pnputil` and Device Manager error codes have no Ubuntu equivalent, so those stay PowerShell:
 
 ```powershell
-# Full diagnostic dump - run this first
+# Is everything up? If not, what to do - run this first
+.\diagnostics\Test-EgpuHealth.ps1
+
+# Full diagnostic dump
 .\diagnostics\Get-GpuState.ps1
 
 # Just check for the driver version collision

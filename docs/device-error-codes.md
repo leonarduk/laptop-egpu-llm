@@ -11,10 +11,12 @@ Get-PnpDevice -Class Display | Where-Object { $_.Present -eq $true } |
 
 | Constant | Code | Meaning | What it usually is here |
 |---|---|---|---|
+| `CM_PROB_FAILED_START` | 10 | This device cannot start | On the enclosure's **PCI Express Upstream Switch Port**: its PCIe link did not come up, so the GPU behind it never appears. Power-cycle the enclosure. |
 | `CM_PROB_NORMAL_CONFLICT` | 12 | Cannot find enough free resources | PCIe/MMIO address space exhausted. Hot-plug problem. |
 | `CM_PROB_REINSTALL` | 18 | Reinstall the drivers for this device | Transient state during a failed install. |
 | `CM_PROB_FAILED_INSTALL` | 28 | Drivers are not installed | A `-clean` install removed the driver and did not replace it. |
 | `CM_PROB_FAILED_ADD` | 31 | Windows cannot load the required drivers | **Driver version collision.** The real bug. |
+| `CM_PROB_FAILED_POST_START` | 43 | Windows has stopped this device because it has reported problems | The GPU crashed or was reset (nvlddmkm event 14, "GPU Reset Required") and did not recover. Power-cycle the enclosure. |
 | `CM_PROB_PHANTOM` | 45 | Stale record, device not present | Normal when the enclosure is unplugged. Not a failure. |
 
 ## Why the distinction matters
