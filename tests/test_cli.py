@@ -16,6 +16,17 @@ ONE_CARD = [Gpu(0, "RTX 5070 Laptop", 8151 * MIB, 7700 * MIB)]
 SEVEN_B = int(4.36 * GIB)
 TWENTY_SEVEN_B = int(11.29 * GIB)
 
+# The real pair, as nvidia-smi reports it with nothing loaded.
+LAPTOP_8GB = Gpu(0, "RTX 5070 Laptop", 8151 * MIB, 7700 * MIB)
+EGPU_16GB = Gpu(1, "RTX 5060 Ti", 16311 * MIB, 15600 * MIB)
+
+OLLAMA_ENV = (
+    "OLLAMA_KV_CACHE_TYPE",
+    "OLLAMA_FLASH_ATTENTION",
+    "OLLAMA_NUM_PARALLEL",
+    "OLLAMA_CONTEXT_LENGTH",
+)
+
 
 class StubClient:
     def __init__(
@@ -29,6 +40,11 @@ class StubClient:
         show=None,
     ):
         self._sizes = sizes or {}
+        # /api/show payloads by model name. Absent means an empty payload,
+        # which carries no architecture: the fit check falls back to file
+        # size plus headroom, as it did before the KV estimate existed.
+        self._show = show or {}
+        self.show_calls = []
         self._loaded = loaded or []
         self._ps_error = ps_error
         # `stop` reads resident state twice - once to decide what to unload,
@@ -44,8 +60,6 @@ class StubClient:
             "total_duration": 2_200_000_000,
         }
         self.ps_calls = 0
-        self._show = show or {}
-        self.show_calls = []
 
     def list_models(self):
         return [ModelInfo(n, s) for n, s in sorted(self._sizes.items(), key=lambda kv: -kv[1])]
@@ -63,10 +77,10 @@ class StubClient:
 
     def show(self, model):
         self.show_calls.append(model)
-        payload = self._show.get(model)
+        payload = self._show.get(model, {})
         if isinstance(payload, Exception):
             raise payload
-        return payload or {}
+        return payload
 
     def generate(self, model, prompt, num_predict, timeout=600):
         return self._generate
@@ -81,6 +95,11 @@ class StubClient:
 @pytest.fixture
 def wire(monkeypatch):
     """Point the CLI at a stub client and a fixed GPU inventory."""
+
+    # The KV estimate reads these from the environment; the machine the
+    # tests run on (this one sets q4_0) must not change the arithmetic.
+    for var in OLLAMA_ENV:
+        monkeypatch.delenv(var, raising=False)
 
     def _wire(client, gpus=None):
         monkeypatch.setattr(cli, "query_gpus", lambda: list(gpus or ONE_CARD))
@@ -102,6 +121,120 @@ def test_model_that_fits_exits_zero(wire):
 def test_model_that_does_not_fit_exits_one(wire):
     wire(StubClient({"qwen3.8-64k:latest": TWENTY_SEVEN_B}))
     assert run(["fit", "qwen3.8-64k:latest"]) == cli.DOES_NOT_FIT
+
+
+def test_fit_shows_the_kv_cache_as_its_own_component(wire, capsys, monkeypatch, qwen35_show):
+    """qwen3.8-100k on the real pair: 16.2 GiB of weights + 20% + the
+    measured 1759.5 MiB cache. The cache is what the old file-size check
+    could not see."""
+    monkeypatch.setenv("OLLAMA_KV_CACHE_TYPE", "q4_0")
+    monkeypatch.setenv("OLLAMA_FLASH_ATTENTION", "1")
+    weights = int(16.2 * GIB)
+    wire(
+        StubClient({"qwen3.8-100k:latest": weights}, show={"qwen3.8-100k:latest": qwen35_show}),
+        gpus=[LAPTOP_8GB, EGPU_16GB],
+    )
+    assert run(["fit", "qwen3.8-100k", "--strategy", "proportional"]) == cli.OK
+    out = capsys.readouterr().out
+    assert "OLLAMA_KV_CACHE_TYPE=q4_0" in out
+    assert "assumes the Ollama server was started with the same settings" in out
+    assert "16.20 GiB + 20% + KV  1.72 GiB =  21.16 GiB  fits" in out
+    assert "KV: q4_0, num_ctx 100000 (Modelfile), 16 of 64 layers, 1 slot(s)" in out
+
+
+def test_the_kv_cache_can_be_what_tips_a_model_over(wire, monkeypatch, qwen35_show):
+    """Same model, same budget, f16 cache: 1759.5 MiB becomes ~6.1 GiB,
+    and the file-size-only check would have said it fits (10 GiB + 20%
+    against the ~15.0 GiB conservative budget)."""
+    weights = int(10.0 * GIB)
+    client = StubClient({"qwen3.8-100k:latest": weights}, show={"qwen3.8-100k:latest": qwen35_show})
+    wire(client, gpus=[LAPTOP_8GB, EGPU_16GB])
+    monkeypatch.setenv("OLLAMA_KV_CACHE_TYPE", "q4_0")
+    assert run(["fit", "qwen3.8-100k"]) == cli.OK
+    monkeypatch.setenv("OLLAMA_KV_CACHE_TYPE", "f16")
+    assert run(["fit", "qwen3.8-100k"]) == cli.DOES_NOT_FIT
+
+
+def test_fit_falls_back_to_file_size_and_says_so_when_show_fails(wire, capsys):
+    wire(StubClient({"m:latest": SEVEN_B}, show={"m:latest": OllamaUnavailable("500 boom")}))
+    assert run(["fit", "m"]) == cli.OK
+    out = capsys.readouterr().out
+    assert "KV not estimated (/api/show failed: 500 boom); file size + 20% only" in out
+    assert "KV     ?" in out
+
+
+def test_fit_falls_back_when_show_hits_a_connection_error(wire, capsys, monkeypatch):
+    """Through the real client, so the URLError -> OllamaUnavailable
+    translation is exercised rather than assumed: /api/tags answers, then
+    the server goes away before /api/show."""
+    import urllib.error
+
+    from ollama_tools.client import OllamaClient
+
+    class TagsOnly(OllamaClient):
+        def list_models(self):
+            return [ModelInfo("m:latest", SEVEN_B)]
+
+    def refuse(request, timeout=None):
+        raise urllib.error.URLError("[WinError 10061] connection refused")
+
+    monkeypatch.setattr("ollama_tools.client.urllib.request.urlopen", refuse)
+    wire(TagsOnly())
+    assert run(["fit", "m"]) == cli.OK
+    out = capsys.readouterr().out
+    assert "KV not estimated (/api/show failed:" in out
+    assert "connection refused" in out
+
+
+def test_fit_falls_back_when_show_carries_a_malformed_value(wire, capsys, qwen35_show):
+    qwen35_show["model_info"]["qwen35.attention.head_count_kv"] = 4.5
+    wire(StubClient({"m:latest": SEVEN_B}, show={"m:latest": qwen35_show}))
+    assert run(["fit", "m"]) == cli.OK
+    assert "KV not estimated (qwen35.attention.head_count_kv is 4.5" in capsys.readouterr().out
+
+
+def test_fit_falls_back_when_show_lacks_the_architecture(wire, capsys):
+    wire(StubClient({"m:latest": SEVEN_B}))
+    assert run(["fit", "m"]) == cli.OK
+    assert "KV not estimated (/api/show returned no model_info)" in capsys.readouterr().out
+
+
+def test_a_tagless_name_finds_the_latest_tag(wire, capsys):
+    """/api/tags only lists `name:latest`; `fit qwen3.8-216k` used to
+    report a pulled model as not pulled."""
+    client = wire(StubClient({"qwen3.8-216k:latest": SEVEN_B}))
+    assert run(["fit", "qwen3.8-216k"]) == cli.OK
+    out = capsys.readouterr().out
+    assert "not pulled" not in out
+    assert client.show_calls == ["qwen3.8-216k:latest"]
+
+
+def test_a_tagless_name_matches_a_resident_model_for_stop(wire, capsys):
+    wire(StubClient(loaded=[LoadedModel("qwen3.8-216k:latest", 1000, 1000)]))
+    assert run(["stop", "qwen3.8-216k"]) == cli.OK
+    assert "Unloading qwen3.8-216k:latest" in capsys.readouterr().out
+
+
+def test_bench_finds_offload_for_a_tagless_name(wire, capsys):
+    wire(StubClient({"m:latest": SEVEN_B}, loaded=[LoadedModel("m:latest", 1000, 800)]))
+    assert run(["bench", "m"]) == cli.OK
+    assert "GPU offload: 80%" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("value", ["-10", "ten", "1.5"])
+def test_headroom_must_be_a_non_negative_whole_number(wire, capsys, value):
+    """Rejected by argparse as a usage error (exit 2), not a traceback from
+    required_bytes exiting 1 -- which reads as "does not fit"."""
+    wire(StubClient({"m:latest": SEVEN_B}))
+    with pytest.raises(SystemExit) as caught:
+        run(["fit", "m", "--headroom", value])
+    assert caught.value.code == cli.CANNOT_ANSWER
+    assert "--headroom" in capsys.readouterr().err
+
+
+def test_zero_headroom_is_allowed(wire):
+    wire(StubClient({"m:latest": SEVEN_B}))
+    assert run(["fit", "m", "--headroom", "0"]) == cli.OK
 
 
 def test_survey_reports_oversized_models_without_failing(wire):
@@ -231,18 +364,41 @@ def test_ps_with_nothing_resident(wire, capsys):
     assert "Nothing resident" in capsys.readouterr().out
 
 
+def picked(capsys):
+    """(stdout, stderr) of a picker run. stdout is the contract: the bare
+    model name and a newline, nothing else, so a script can capture it."""
+    captured = capsys.readouterr()
+    return captured.out, captured.err
+
+
 def test_coder_model_picks_7b_for_single_8gb_card(wire, capsys):
     wire(StubClient(), gpus=ONE_CARD)
     assert run(["coder-model"]) == cli.OK
-    assert "coder model: qwen2.5-coder:7b" in capsys.readouterr().out
+    out, err = picked(capsys)
+    assert out == "qwen2.5-coder:7b\n"
+    # The diagnostics are still there, just not on stdout.
+    assert "GPUs present" in err and "coder model: qwen2.5-coder:7b" in err
 
 
-def test_coder_model_picks_32b_for_both_egpus(wire, capsys):
+def test_coder_model_picks_216k_for_two_16gb_cards(wire, capsys):
     egpu = Gpu(1, "RTX 5060 Ti", 16311 * MIB, 16000 * MIB)
     twin = Gpu(2, "RTX 5060 Ti (twin)", 16311 * MIB, 16000 * MIB)
     wire(StubClient(), gpus=[egpu, twin])
     assert run(["coder-model"]) == cli.OK
-    assert "coder model: qwen2.5-coder:32b" in capsys.readouterr().out
+    assert picked(capsys)[0] == "qwen3.8-216k\n"
+
+
+def test_pickers_on_the_real_8gb_plus_16gb_pair(wire, capsys):
+    """The machine this was built for. Conservative caps the asymmetric
+    pair at 2 x 7700 MiB (~15.0 GiB), which reaches the 100k build but not
+    the 216k one; proportional sums to ~22.8 GiB and reaches both. The
+    default stays conservative -- the safe side of an unknown split."""
+    wire(StubClient(), gpus=[LAPTOP_8GB, EGPU_16GB])
+    for command in ("coder-model", "general-model"):
+        assert run([command]) == cli.OK
+        assert picked(capsys)[0] == "qwen3.8-100k\n"
+        assert run([command, "--strategy", "proportional"]) == cli.OK
+        assert picked(capsys)[0] == "qwen3.8-216k\n"
 
 
 def test_coder_model_cli_agrees_with_the_library_function(wire, capsys):
@@ -251,19 +407,10 @@ def test_coder_model_cli_agrees_with_the_library_function(wire, capsys):
     from ollama_tools.coder_model import get_coder_model
     from ollama_tools.gpu import CONSERVATIVE
 
-    gpus = [Gpu(0, "RTX 5070 Laptop", 8151 * MIB, 7700 * MIB), Gpu(1, "RTX 5060 Ti", 16311 * MIB, 16000 * MIB)]
+    gpus = [LAPTOP_8GB, EGPU_16GB]
     wire(StubClient(), gpus=gpus)
     assert run(["coder-model"]) == cli.OK
-    out = capsys.readouterr().out
-    assert f"coder model: {get_coder_model(CONSERVATIVE, gpus)}" in out
-
-
-def test_coder_model_accepts_proportional_strategy(wire, capsys):
-    gpus = [Gpu(0, "RTX 5070 Laptop", 8151 * MIB, 7700 * MIB), Gpu(1, "RTX 5060 Ti", 16311 * MIB, 16000 * MIB)]
-    wire(StubClient(), gpus=gpus)
-    assert run(["coder-model", "--strategy", "proportional"]) == cli.OK
-    # 7700 + 16000 MiB free, proportional sum clears the 18 GiB top tier.
-    assert "coder model: qwen2.5-coder:32b" in capsys.readouterr().out
+    assert picked(capsys)[0] == f"{get_coder_model(CONSERVATIVE, gpus)}\n"
 
 
 def test_coder_model_falls_back_when_gpu_unavailable(monkeypatch, capsys):
@@ -272,21 +419,25 @@ def test_coder_model_falls_back_when_gpu_unavailable(monkeypatch, capsys):
 
     monkeypatch.setattr(cli, "query_gpus", raise_unavailable)
     assert run(["coder-model"]) == cli.OK
-    assert "qwen2.5-coder:0.5b" in capsys.readouterr().out
+    out, err = picked(capsys)
+    assert out == "qwen2.5-coder:0.5b\n"
+    assert "nvidia-smi not found" in err
 
 
 def test_general_model_picks_9b_for_single_8gb_card(wire, capsys):
     wire(StubClient(), gpus=ONE_CARD)
     assert run(["general-model"]) == cli.OK
-    assert "general model: qwen3.5:9b" in capsys.readouterr().out
+    out, err = picked(capsys)
+    assert out == "qwen3.5:9b\n"
+    assert "general model: qwen3.5:9b" in err
 
 
-def test_general_model_picks_qwen3_216k_for_both_egpus(wire, capsys):
+def test_general_model_picks_qwen3_216k_for_two_16gb_cards(wire, capsys):
     egpu = Gpu(1, "RTX 5060 Ti", 16311 * MIB, 16000 * MIB)
     twin = Gpu(2, "RTX 5060 Ti (twin)", 16311 * MIB, 16000 * MIB)
     wire(StubClient(), gpus=[egpu, twin])
     assert run(["general-model"]) == cli.OK
-    assert "general model: qwen3.8-216k" in capsys.readouterr().out
+    assert picked(capsys)[0] == "qwen3.8-216k\n"
 
 
 def test_general_model_falls_back_when_gpu_unavailable(monkeypatch, capsys):
@@ -295,7 +446,7 @@ def test_general_model_falls_back_when_gpu_unavailable(monkeypatch, capsys):
 
     monkeypatch.setattr(cli, "query_gpus", raise_unavailable)
     assert run(["general-model"]) == cli.OK
-    assert "gemma3:4b" in capsys.readouterr().out
+    assert picked(capsys)[0] == "gemma3:4b\n"
 
 
 def test_general_model_cli_agrees_with_the_library_function(wire, capsys):
@@ -304,19 +455,10 @@ def test_general_model_cli_agrees_with_the_library_function(wire, capsys):
     from ollama_tools.general_model import get_general_model
     from ollama_tools.gpu import CONSERVATIVE
 
-    gpus = [Gpu(0, "RTX 5070 Laptop", 8151 * MIB, 7700 * MIB), Gpu(1, "RTX 5060 Ti", 16311 * MIB, 16000 * MIB)]
+    gpus = [LAPTOP_8GB, EGPU_16GB]
     wire(StubClient(), gpus=gpus)
     assert run(["general-model"]) == cli.OK
-    out = capsys.readouterr().out
-    assert f"general model: {get_general_model(CONSERVATIVE, gpus)}" in out
-
-
-def test_general_model_accepts_proportional_strategy(wire, capsys):
-    gpus = [Gpu(0, "RTX 5070 Laptop", 8151 * MIB, 7700 * MIB), Gpu(1, "RTX 5060 Ti", 16311 * MIB, 16000 * MIB)]
-    wire(StubClient(), gpus=gpus)
-    assert run(["general-model", "--strategy", "proportional"]) == cli.OK
-    # 7700 + 16000 MiB free, proportional sum clears the 18 GiB top tier.
-    assert "general model: qwen3.8-216k" in capsys.readouterr().out
+    assert picked(capsys)[0] == f"{get_general_model(CONSERVATIVE, gpus)}\n"
 
 
 def test_endpoint_is_accepted_after_the_subcommand(wire):
@@ -366,129 +508,74 @@ def test_bench_read_failure_and_absent_model_say_different_things(wire, capsys):
     assert "no longer resident" in absent and "Could not re-read" not in absent
 
 
-# --parallel: the KV cache is computed per slot and multiplied.
-
-FOURTEEN_B = int(8.37 * GIB)
-BOTH_CARDS = [
-    Gpu(0, "RTX 5070 Laptop", 8151 * MIB, 7700 * MIB),
-    Gpu(1, "RTX 5060 Ti", 16311 * MIB, 16000 * MIB),
-]
-QWEN25_14B_SHOW = {
-    "model_info": {
-        "general.architecture": "qwen2",
-        "qwen2.block_count": 48,
-        "qwen2.attention.head_count": 40,
-        "qwen2.attention.head_count_kv": 8,
-        "qwen2.embedding_length": 5120,
-        "qwen2.context_length": 32768,
-    }
-}
-HYBRID_SHOW = {
-    "model_info": {
-        "general.architecture": "qwen35",
-        "qwen35.block_count": 64,
-        "qwen35.full_attention_interval": 4,
-    }
-}
+# --parallel / --kv-cache-type / --num-ctx: the server's settings, stated
+# rather than assumed from this shell's environment.
 
 
-def fourteen_b(**extra):
-    return StubClient({"qwen2.5-coder:14b": FOURTEEN_B}, show={"qwen2.5-coder:14b": QWEN25_14B_SHOW}, **extra)
+def _qwen35(qwen35_show, weights=int(10.0 * GIB)):
+    return StubClient({"qwen3.8-100k:latest": weights}, show={"qwen3.8-100k:latest": qwen35_show})
 
 
-def test_without_parallel_the_kv_cache_is_not_consulted(wire):
-    """The default check is unchanged, and must not need /api/show."""
-    client = wire(fourteen_b(), gpus=BOTH_CARDS)
-    assert run(["fit", "qwen2.5-coder:14b", "--strategy", "proportional"]) == cli.OK
-    assert client.show_calls == []
-
-
-def test_parallel_slots_that_fit(wire, capsys):
-    """10.04 GB of weights+headroom plus 7 x 1.69 GB q4_0 slots = 21.9 GB."""
-    wire(fourteen_b(), gpus=BOTH_CARDS)
-    argv = ["fit", "qwen2.5-coder:14b", "--strategy", "proportional", "--parallel", "7", "--kv-cache-type", "q4_0"]
-    assert run(argv) == cli.OK
+def test_kv_cache_type_flag_overrides_the_shell(wire, capsys, monkeypatch, qwen35_show):
+    """The shell says f16 (too big); the flag says what the server runs."""
+    monkeypatch.setenv("OLLAMA_KV_CACHE_TYPE", "f16")
+    wire(_qwen35(qwen35_show), gpus=[LAPTOP_8GB, EGPU_16GB])
+    assert run(["fit", "qwen3.8-100k"]) == cli.DOES_NOT_FIT
+    capsys.readouterr()
+    assert run(["fit", "qwen3.8-100k", "--kv-cache-type", "q4_0"]) == cli.OK
     out = capsys.readouterr().out
-    assert "7 x 1.69 GB KV" in out
-    assert "OLLAMA_NUM_PARALLEL" in out
+    assert "OLLAMA_KV_CACHE_TYPE=q4_0" in out
+    assert "--kv-cache-type over this shell's environment" in out
 
 
-def test_too_many_parallel_slots_do_not_fit(wire):
-    wire(fourteen_b(), gpus=BOTH_CARDS)
-    argv = ["fit", "qwen2.5-coder:14b", "--strategy", "proportional", "--parallel", "9", "--kv-cache-type", "q4_0"]
-    assert run(argv) == cli.DOES_NOT_FIT
+def test_kv_cache_type_flag_wins_over_flash_attention_off(wire, monkeypatch, qwen35_show):
+    """Naming q4_0 says the server has flash attention on; the shell's
+    OLLAMA_FLASH_ATTENTION=0 must not silently turn it back into f16."""
+    monkeypatch.setenv("OLLAMA_FLASH_ATTENTION", "0")
+    wire(_qwen35(qwen35_show), gpus=[LAPTOP_8GB, EGPU_16GB])
+    assert run(["fit", "qwen3.8-100k", "--kv-cache-type", "q4_0"]) == cli.OK
 
 
-def test_kv_cache_type_defaults_to_the_largest(wire):
-    """f16 is the conservative default: 4 x 6 GB slots cannot fit."""
-    wire(fourteen_b(), gpus=BOTH_CARDS)
-    assert run(["fit", "qwen2.5-coder:14b", "--strategy", "proportional", "--parallel", "4"]) == cli.DOES_NOT_FIT
+def test_parallel_flag_overrides_the_shell_and_multiplies_the_cache(wire, capsys, monkeypatch, qwen35_show):
+    """4 x 100k q4_0 slots is ~6.9 GiB of cache: fits the proportional
+    budget, not the conservative one."""
+    monkeypatch.setenv("OLLAMA_NUM_PARALLEL", "8")
+    wire(_qwen35(qwen35_show), gpus=[LAPTOP_8GB, EGPU_16GB])
+    base = ["fit", "qwen3.8-100k", "--parallel", "4", "--kv-cache-type", "q4_0"]
+    assert run(base) == cli.DOES_NOT_FIT
+    capsys.readouterr()
+    assert run(base + ["--strategy", "proportional"]) == cli.OK
+    out = capsys.readouterr().out
+    assert "OLLAMA_NUM_PARALLEL=4" in out
+    assert "4 slot(s)" in out
 
 
-def test_num_ctx_alone_means_one_slot(wire, capsys):
-    client = wire(fourteen_b(), gpus=BOTH_CARDS)
-    assert run(["fit", "qwen2.5-coder:14b", "--num-ctx", "8192"]) == cli.OK
-    assert client.show_calls == ["qwen2.5-coder:14b"]
-    assert "1 x 1.50 GB KV (8,192 ctx per slot)" in capsys.readouterr().out
+def test_num_ctx_flag_sizes_a_context_before_the_rebuild(wire, capsys, qwen35_show):
+    wire(_qwen35(qwen35_show), gpus=[LAPTOP_8GB, EGPU_16GB])
+    assert run(["fit", "qwen3.8-100k", "--num-ctx", "50000", "--kv-cache-type", "q4_0"]) == cli.OK
+    assert "num_ctx 50000 (--num-ctx)" in capsys.readouterr().out
 
 
-def test_hybrid_architecture_cannot_be_answered(wire, capsys):
-    wire(StubClient({"qwen3.8-216k:latest": TWENTY_SEVEN_B}, show={"qwen3.8-216k:latest": HYBRID_SHOW}), gpus=BOTH_CARDS)
-    assert run(["fit", "qwen3.8-216k:latest", "--parallel", "2"]) == cli.CANNOT_ANSWER
-    assert "measure-context-ceiling" in capsys.readouterr().err
+def test_start_refuses_when_the_stated_slots_do_not_fit(wire, qwen35_show):
+    wire(_qwen35(qwen35_show), gpus=[LAPTOP_8GB, EGPU_16GB])
+    assert run(["start", "qwen3.8-100k", "--parallel", "4"]) == cli.DOES_NOT_FIT
 
 
-def test_a_model_that_does_not_fit_outranks_one_that_cannot_be_sized(wire):
-    wire(
-        StubClient(
-            {"qwen2.5-coder:14b": FOURTEEN_B, "hybrid": TWENTY_SEVEN_B},
-            show={"qwen2.5-coder:14b": QWEN25_14B_SHOW, "hybrid": HYBRID_SHOW},
-        ),
-        gpus=BOTH_CARDS,
-    )
-    assert run(["fit", "qwen2.5-coder:14b", "hybrid", "--parallel", "4"]) == cli.DOES_NOT_FIT
-
-
-def test_show_failing_is_cannot_answer(wire):
-    wire(StubClient({"m": SEVEN_B}, show={"m": OllamaUnavailable("boom")}))
-    assert run(["fit", "m", "--parallel", "2"]) == cli.CANNOT_ANSWER
-
-
-def test_one_show_failure_does_not_hide_the_other_verdicts(wire, capsys):
-    wire(
-        StubClient(
-            {"qwen2.5-coder:14b": FOURTEEN_B, "flaky": SEVEN_B},
-            show={"qwen2.5-coder:14b": QWEN25_14B_SHOW, "flaky": OllamaUnavailable("boom")},
-        ),
-        gpus=BOTH_CARDS,
-    )
-    argv = ["fit", "flaky", "qwen2.5-coder:14b", "--strategy", "proportional", "--parallel", "2", "--kv-cache-type", "q4_0"]
-    assert run(argv) == cli.CANNOT_ANSWER
-    out = capsys.readouterr()
-    assert "fits" in out.out
-    assert "flaky: /api/show failed: boom" in out.err
-
-
-def test_bench_refuses_when_the_slots_do_not_fit(wire):
-    """bench routes through the same check, so --parallel is honoured."""
-    wire(fourteen_b(), gpus=BOTH_CARDS)
-    assert run(["bench", "qwen2.5-coder:14b", "--parallel", "4"]) == cli.DOES_NOT_FIT
-
-
-def test_start_refuses_when_the_slots_do_not_fit(wire):
-    wire(fourteen_b(), gpus=BOTH_CARDS)
-    assert run(["start", "qwen2.5-coder:14b", "--parallel", "4"]) == cli.DOES_NOT_FIT
+def test_bench_refuses_when_the_stated_slots_do_not_fit(wire, qwen35_show):
+    wire(_qwen35(qwen35_show), gpus=[LAPTOP_8GB, EGPU_16GB])
+    assert run(["bench", "qwen3.8-100k", "--parallel", "4"]) == cli.DOES_NOT_FIT
 
 
 @pytest.mark.parametrize("command", ["start", "bench"])
 def test_num_ctx_is_fit_only(command):
-    """start and bench load at the manifest's num_ctx; an override there
+    """start and bench load at the Modelfile's num_ctx; an override there
     would pass a check the real load then fails."""
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args([command, "m", "--num-ctx", "8192"])
 
 
+@pytest.mark.parametrize("flag", ["--parallel", "--num-ctx"])
 @pytest.mark.parametrize("value", ["0", "-1", "two"])
-def test_parallel_must_be_a_positive_integer(value):
+def test_counts_must_be_positive_integers(flag, value):
     with pytest.raises(SystemExit):
-        cli.build_parser().parse_args(["fit", "m", "--parallel", value])
+        cli.build_parser().parse_args(["fit", "m", flag, value])

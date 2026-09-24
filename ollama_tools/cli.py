@@ -16,15 +16,23 @@ hang this whole package exists to prevent.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 
 from . import bench as bench_mod
-from .client import OllamaClient, OllamaUnavailable
+from .client import OllamaClient, OllamaUnavailable, normalise_model_name
 from .coder_model import CODER_FALLBACK, coder_model_for_budget
 from .envfile import models_to_check, read_env_file, role_models
-from .fit import DEFAULT_HEADROOM_PERCENT, judge
-from .kvcache import DEFAULT_KV_CACHE_TYPE, KV_CACHE_TYPES, KvCacheUnknown, kv_shape
+from .fit import (
+    DEFAULT_HEADROOM_PERCENT,
+    KV_CACHE_TYPES,
+    KvUnknown,
+    estimate_kv_cache,
+    judge,
+    kv_cache_type,
+    num_parallel,
+)
 from .general_model import GENERAL_FALLBACK, general_model_for_budget
 from .gpu import CONSERVATIVE, GIB, GpuUnavailable, STRATEGIES, budget_bytes, query_gpus
 
@@ -32,7 +40,57 @@ OK, DOES_NOT_FIT, CANNOT_ANSWER = 0, 1, 2
 
 
 def _gib(value: float) -> str:
-    return f"{value / GIB:.2f} GB"
+    return f"{value / GIB:.2f} GiB"
+
+
+def _non_negative_int(text: str) -> int:
+    """argparse type for --headroom. Rejected here, as a usage error (exit
+    2), rather than reaching required_bytes' ValueError and surfacing as a
+    traceback with exit 1 -- which is the "does not fit" code."""
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a whole number") from None
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"{value} is negative; headroom must be 0 or more")
+    return value
+
+
+def _positive_int(text: str) -> int:
+    """argparse type for --parallel and --num-ctx: a usage error (exit 2)
+    for 0, negatives and non-numbers, not a silent fallback to 1."""
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a whole number") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"{value} must be at least 1")
+    return value
+
+
+def _kv_env(args) -> tuple[dict[str, str], str]:
+    """The environment the KV estimate reads, with any flags laid over this
+    shell's, and a note saying where the settings came from.
+
+    The flags exist because this shell's environment is only a stand-in for
+    the server's (docs/ollama-multi-gpu.md section 3): passing what the
+    server was actually started with beats hoping the two match."""
+    env = dict(os.environ)
+    overridden = []
+    if getattr(args, "parallel", None) is not None:
+        env["OLLAMA_NUM_PARALLEL"] = str(args.parallel)
+        overridden.append("--parallel")
+    if getattr(args, "kv_cache_type", None) is not None:
+        env["OLLAMA_KV_CACHE_TYPE"] = args.kv_cache_type
+        # Naming a quantised type is a statement that the server uses it,
+        # which it can only do with flash attention on.
+        env["OLLAMA_FLASH_ATTENTION"] = "1"
+        overridden.append("--kv-cache-type")
+    if overridden:
+        source = f"{' and '.join(overridden)} over this shell's environment"
+    else:
+        source = "read from this shell -- assumes the Ollama server was started with the same settings"
+    return env, source
 
 
 def _refuse(message: str, code: int) -> int:
@@ -40,27 +98,34 @@ def _refuse(message: str, code: int) -> int:
     return code
 
 
-def _describe_gpus(gpus, strategy: str) -> int:
-    print("GPUs present")
+def _describe_gpus(gpus, strategy: str, out=None) -> int:
+    """Print the inventory and budget to ``out`` (stdout by default; the
+    pickers send it to stderr so their stdout is just the model name)."""
+    out = out or sys.stdout
+
+    def say(text: str = "") -> None:
+        print(text, file=out)
+
+    say("GPUs present")
     for gpu in gpus:
-        print(f"  [{gpu.index}] {gpu.name} - {gpu.free_gib:.2f} GB free of {gpu.total_gib:.2f} GB")
+        say(f"  [{gpu.index}] {gpu.name} - {gpu.free_gib:.2f} GiB free of {gpu.total_gib:.2f} GiB")
 
     total = sum(g.free_bytes for g in gpus)
     even = min(g.free_bytes for g in gpus) * len(gpus)
     budget = budget_bytes(gpus, strategy)
 
-    print(f"\n  free, summed             : {_gib(total)}")
+    say(f"\n  free, summed             : {_gib(total)}")
     if len(gpus) > 1:
-        print(f"  free, even-split ceiling : {_gib(even)}  ({len(gpus)} x smallest card)")
+        say(f"  free, even-split ceiling : {_gib(even)}  ({len(gpus)} x smallest card)")
         if even < total:
-            print(
+            say(
                 "\n  These cards are asymmetric. An even split wastes the larger one -\n"
                 "  see docs/lmstudio-multi-gpu.md for moving off 'Split evenly'."
             )
-    print(f"  budget ({strategy}): {_gib(budget)}")
+    say(f"  budget ({strategy}): {_gib(budget)}")
 
     if len(gpus) == 1:
-        print(
+        say(
             "\n  Only one GPU is present. If the eGPU should be attached:\n"
             "    - Hot-plugging will not fix it. Cold boot with the enclosure attached.\n"
             "    - On Windows 11 that means Restart, not Shut down: with Fast Startup,\n"
@@ -72,7 +137,7 @@ def _describe_gpus(gpus, strategy: str) -> int:
 
 
 def _sizes(client: OllamaClient) -> dict[str, int]:
-    return {m.name: m.size_bytes for m in client.list_models()}
+    return {normalise_model_name(m.name): m.size_bytes for m in client.list_models()}
 
 
 def _resolve_requested(args, client: OllamaClient, sizes: dict[str, int]):
@@ -90,22 +155,10 @@ def _resolve_requested(args, client: OllamaClient, sizes: dict[str, int]):
             else:
                 print(f"  {entry.role:<9} -> {entry.source} ({entry.note})")
         print()
-        return models_to_check(values), True
+        return [normalise_model_name(m) for m in models_to_check(values)], True
     if getattr(args, "model", None):
-        return list(args.model), True
+        return [normalise_model_name(m) for m in args.model], True
     return sorted(sizes, key=lambda n: sizes[n], reverse=True), False
-
-
-def _kv_request(args):
-    """(parallel, kv_cache_type, num_ctx), or parallel None for the
-    headroom-only check. Naming a KV type or context without a slot count
-    is still a question about the KV cache, so it means one slot."""
-    num_ctx = getattr(args, "num_ctx", None)
-    kv_type = args.kv_cache_type
-    parallel = args.parallel
-    if parallel is None and (num_ctx or kv_type):
-        parallel = 1
-    return parallel, kv_type or DEFAULT_KV_CACHE_TYPE, num_ctx
 
 
 def _check(args) -> int:
@@ -126,11 +179,13 @@ def _check(args) -> int:
         print("Nothing to check.")
         return OK
 
-    parallel, kv_type, num_ctx = _kv_request(args)
-    if parallel is not None:
-        print(f"\nBudgeting {parallel} parallel slot(s), KV cache {kv_type}")
-
-    print("\nModels")
+    env, env_source = _kv_env(args)
+    num_ctx = getattr(args, "num_ctx", None)
+    print(
+        f"\nModels  (KV cache at OLLAMA_KV_CACHE_TYPE={kv_cache_type(env)} x "
+        f"OLLAMA_NUM_PARALLEL={num_parallel(env)},\n"
+        f"         {env_source})"
+    )
     verdicts = []
     # Collected rather than returned on: a multi-role config with one model
     # missing should say so once, with every other role's verdict alongside,
@@ -139,49 +194,30 @@ def _check(args) -> int:
     # Only reachable for an explicit list or --env-file. A survey builds its
     # list from `sizes` itself, so every name is pulled by construction.
     unpulled: list[str] = []
-    # Same collect-don't-return reasoning, for models whose KV cache cannot
-    # be computed (hybrid architectures, /api/show failing): (name, why).
-    unsizable: list[tuple[str, str]] = []
     for name in models:
         if name not in sizes:
             unpulled.append(name)
             print(f"  {name:<40} not pulled - size unknown")
             continue
-        kv_line = ""
-        kv_slot = 0
-        if parallel is not None:
-            try:
-                shape = kv_shape(client.show(name), num_ctx)
-            except OllamaUnavailable as exc:
-                unsizable.append((name, f"/api/show failed: {exc}"))
-                print(f"  {name:<40} KV cache could not be read - see below")
-                continue
-            except KvCacheUnknown as exc:
-                unsizable.append((name, str(exc)))
-                print(f"  {name:<40} KV cache cannot be computed - see below")
-                continue
-            kv_slot = shape.slot_bytes(kv_type)
-            kv_line = (
-                f"\n  {'':<40} + {parallel} x {_gib(kv_slot)} KV "
-                f"({shape.context:,} ctx per slot)"
-            )
-        verdict = judge(name, sizes[name], budget, args.headroom, parallel, kv_slot)
+        kv, why_not = _kv_estimate(client, name, env, num_ctx)
+        verdict = judge(name, sizes[name], budget, args.headroom, kv.bytes if kv else 0)
         verdicts.append(verdict)
-        state = "fits" if verdict.fits else f"TOO BIG by {verdict.short_gib:.2f} GB"
+        state = "fits" if verdict.fits else f"TOO BIG by {verdict.short_gib:.2f} GiB"
+        kv_part = f"KV {verdict.kv_gib:5.2f} GiB" if kv else "KV     ?    "
         print(
-            f"  {name:<40} {verdict.size_gib:6.2f} GB + {args.headroom}%"
-            f"{kv_line} = {verdict.needed_gib:6.2f} GB  {state}"
+            f"  {name:<40} {verdict.size_gib:6.2f} GiB + {args.headroom}% + {kv_part} "
+            f"= {verdict.needed_gib:6.2f} GiB  {state}"
         )
-
-    if parallel is not None:
-        # The tool cannot see the server's environment (docs/ollama-multi-gpu.md
-        # section 3), so it can only answer the question it was asked.
-        print(
-            f"\nThis budgets {parallel} slot(s) with a {kv_type} KV cache. Ollama allocates\n"
-            "whatever the *server* was started with - OLLAMA_NUM_PARALLEL, and\n"
-            "OLLAMA_KV_CACHE_TYPE (only with OLLAMA_FLASH_ATTENTION=1). If those\n"
-            "differ, this answered a different question from the one the load will ask."
-        )
+        if kv:
+            print(
+                f"  {'':<40} KV: {kv.cache_type}, num_ctx {kv.num_ctx} ({kv.ctx_source}), "
+                f"{kv.kv_layers} of {kv.block_count} layers, {kv.parallel} slot(s)"
+            )
+        else:
+            print(
+                f"  {'':<40} KV not estimated ({why_not}); "
+                f"file size + {args.headroom}% only"
+            )
 
     too_big = [v for v in verdicts if not v.fits]
     # "Will not fit" outranks "could not be sized" when both are true: both
@@ -194,12 +230,6 @@ def _check(args) -> int:
             "Do not load it - this is the configuration that hangs the machine.",
             DOES_NOT_FIT,
         )
-    if unsizable:
-        listed = "".join(f"\n  {name}: {why}" for name, why in unsizable)
-        return _refuse(
-            f"{len(unsizable)} model(s) have a KV cache that could not be sized:{listed}",
-            CANNOT_ANSWER,
-        )
     if unpulled:
         listed = "".join(f"\n  ollama pull {name}" for name in unpulled)
         return _refuse(
@@ -210,6 +240,18 @@ def _check(args) -> int:
         print(f"\n{len(too_big)} of {len(verdicts)} pulled models do not fit right now.")
     print("\nOK - nothing requested exceeds the VRAM present.")
     return OK
+
+
+def _kv_estimate(client: OllamaClient, name: str, env, num_ctx: int | None = None):
+    """(estimate, None) or (None, why). Never raises: a model whose
+    architecture cannot be read is still judged, on file size plus headroom
+    as before, and the output says which of the two it got."""
+    try:
+        return estimate_kv_cache(client.show(name), env, num_ctx), None
+    except OllamaUnavailable as exc:
+        return None, f"/api/show failed: {exc}"
+    except KvUnknown as exc:
+        return None, str(exc)
 
 
 def _start(args) -> int:
@@ -257,11 +299,11 @@ def _ps(args) -> int:
         print("Nothing resident - all VRAM is free for the next load.")
         return OK
 
-    print(f"{'model':<40}{'total':>10}{'in VRAM':>10}{'offload':>9}")
+    print(f"{'model':<40}{'total GiB':>10}{'VRAM GiB':>10}{'offload':>9}")
     for model in loaded:
         print(
-            f"{model.name:<40}{model.size_bytes / GIB:9.2f}G"
-            f"{model.size_vram_bytes / GIB:9.2f}G{model.offload_fraction * 100:8.0f}%"
+            f"{model.name:<40}{model.size_bytes / GIB:10.2f}"
+            f"{model.size_vram_bytes / GIB:10.2f}{model.offload_fraction * 100:8.0f}%"
         )
     held = sum(m.size_vram_bytes for m in loaded)
     print(f"\n{_gib(held)} held by {len(loaded)} resident model(s).")
@@ -276,7 +318,7 @@ def _ps(args) -> int:
 def _stop(args) -> int:
     client = OllamaClient(args.endpoint)
     try:
-        loaded = {m.name for m in client.loaded_models()}
+        loaded = {normalise_model_name(m.name) for m in client.loaded_models()}
     except OllamaUnavailable as exc:
         return _refuse(str(exc), CANNOT_ANSWER)
 
@@ -284,7 +326,7 @@ def _stop(args) -> int:
         print("Nothing resident - all VRAM is already free.")
         return OK
 
-    targets = sorted(loaded) if args.all else list(args.model or [])
+    targets = sorted(loaded) if args.all else [normalise_model_name(m) for m in args.model or []]
     for name in targets:
         if name not in loaded:
             print(f"{name} is not resident; nothing to unload.")
@@ -308,32 +350,30 @@ def _stop(args) -> int:
     return OK
 
 
-def _coder_model(args) -> int:
+def _pick(args, kind: str, fallback: str, for_budget) -> int:
+    """Shared body of the pickers. stdout carries the model name and
+    nothing else, so ``MODEL=$(ollama-tools coder-model)`` works; the GPU
+    inventory and any fallback reason go to stderr."""
     try:
         gpus = query_gpus()
     except GpuUnavailable as exc:
-        print(f"{exc}. Falling back to the smallest coder model.")
-        print(CODER_FALLBACK)
+        print(f"{exc}. Falling back to the smallest {kind} model.", file=sys.stderr)
+        print(fallback)
         return OK
 
-    budget = _describe_gpus(gpus, args.strategy)
-    model = coder_model_for_budget(budget)
-    print(f"\ncoder model: {model}")
+    budget = _describe_gpus(gpus, args.strategy, out=sys.stderr)
+    model = for_budget(budget)
+    print(f"\n{kind} model: {model}", file=sys.stderr)
+    print(model)
     return OK
+
+
+def _coder_model(args) -> int:
+    return _pick(args, "coder", CODER_FALLBACK, coder_model_for_budget)
 
 
 def _general_model(args) -> int:
-    try:
-        gpus = query_gpus()
-    except GpuUnavailable as exc:
-        print(f"{exc}. Falling back to the smallest general model.")
-        print(GENERAL_FALLBACK)
-        return OK
-
-    budget = _describe_gpus(gpus, args.strategy)
-    model = general_model_for_budget(budget)
-    print(f"\ngeneral model: {model}")
-    return OK
+    return _pick(args, "general", GENERAL_FALLBACK, general_model_for_budget)
 
 
 def _bench(args) -> int:
@@ -372,7 +412,10 @@ def _bench(args) -> int:
     # made the missing offload line mean two different things, with the
     # difference visible only as the presence of a warning further up.
     try:
-        live: list | None = [m for m in client.loaded_models() if m.name == model]
+        wanted = normalise_model_name(model)
+        live: list | None = [
+            m for m in client.loaded_models() if normalise_model_name(m.name) == wanted
+        ]
     except OllamaUnavailable as exc:
         live = None
         print(
@@ -385,7 +428,7 @@ def _bench(args) -> int:
         pct = model_state.offload_fraction * 100
         print(
             f"\nGPU offload: {pct:.0f}% "
-            f"({model_state.size_vram_bytes / GIB:.2f} GB of {model_state.size_bytes / GIB:.2f} GB in VRAM)"
+            f"({model_state.size_vram_bytes / GIB:.2f} GiB of {model_state.size_bytes / GIB:.2f} GiB in VRAM)"
         )
         if pct < 99:
             print("Part of this model is on CPU, which is what caps the rate above.")
@@ -405,13 +448,6 @@ def _bench(args) -> int:
             "so compare like with like when putting these in the README."
         )
     return OK
-
-
-def _positive_int(text: str) -> int:
-    value = int(text)
-    if value < 1:
-        raise argparse.ArgumentTypeError("must be at least 1")
-    return value
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -441,31 +477,42 @@ def build_parser() -> argparse.ArgumentParser:
         else:
             sub.add_argument("model", nargs=1)
         sub.add_argument("--strategy", choices=STRATEGIES, default=CONSERVATIVE)
-        sub.add_argument("--headroom", type=int, default=DEFAULT_HEADROOM_PERCENT)
+        sub.add_argument(
+            "--headroom",
+            type=_non_negative_int,
+            default=DEFAULT_HEADROOM_PERCENT,
+            help=(
+                "percent added to the weights for what is not computed (compute "
+                f"graph, CUDA context); default {DEFAULT_HEADROOM_PERCENT}. The KV "
+                "cache is estimated separately from /api/show, using this shell's "
+                "OLLAMA_KV_CACHE_TYPE, OLLAMA_NUM_PARALLEL and OLLAMA_CONTEXT_LENGTH "
+                "-- so it assumes the server runs with the same settings, unless "
+                "--parallel / --kv-cache-type say otherwise"
+            ),
+        )
         sub.add_argument(
             "--parallel",
             type=_positive_int,
             help=(
-                "budget this many parallel slots (OLLAMA_NUM_PARALLEL), each with its own "
-                "full KV cache computed from the model's shape; default is the "
-                "headroom-only check"
+                "parallel slots to budget a full KV cache for, instead of this "
+                "shell's OLLAMA_NUM_PARALLEL; pass what the server runs with"
             ),
         )
         sub.add_argument(
             "--kv-cache-type",
             choices=sorted(KV_CACHE_TYPES),
-            help=(
-                f"the server's OLLAMA_KV_CACHE_TYPE (default {DEFAULT_KV_CACHE_TYPE}, the "
-                "largest; this tool cannot read the server's environment)"
-            ),
+            help="the server's KV cache type, instead of this shell's OLLAMA_KV_CACHE_TYPE",
         )
         if with_model == "optional":
-            # fit only: start and bench load at the manifest's num_ctx, so an
+            # fit only: start and bench load at the Modelfile's num_ctx, so an
             # override there would pass a check the real load then fails.
             sub.add_argument(
                 "--num-ctx",
                 type=_positive_int,
-                help="context per slot instead of the manifest's num_ctx, e.g. before rebuilding a tag",
+                help=(
+                    "context per slot instead of the Modelfile's num_ctx, e.g. to "
+                    "size a tag before rebuilding it (capped at the trained length)"
+                ),
             )
 
     check = subparsers.add_parser("fit", help="does it fit? (checks only, loads nothing)")
@@ -485,7 +532,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     coder_model = subparsers.add_parser(
         "coder-model",
-        help="pick the coder model that fits the VRAM attached right now (always exits 0)",
+        help=(
+            "pick the coder model that fits the VRAM attached right now; prints "
+            "only the name on stdout, the GPU inventory on stderr (always exits 0)"
+        ),
     )
     coder_model.add_argument("--strategy", choices=STRATEGIES, default=CONSERVATIVE)
     add_common(coder_model)
@@ -493,7 +543,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     general_model = subparsers.add_parser(
         "general-model",
-        help="pick the general-purpose model that fits the VRAM attached right now (always exits 0)",
+        help=(
+            "pick the general-purpose model that fits the VRAM attached right now; "
+            "prints only the name on stdout, the GPU inventory on stderr (always exits 0)"
+        ),
     )
     general_model.add_argument("--strategy", choices=STRATEGIES, default=CONSERVATIVE)
     add_common(general_model)

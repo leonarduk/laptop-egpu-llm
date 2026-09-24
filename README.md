@@ -2,7 +2,7 @@
 
 Running local LLMs on a laptop with an external GPU, using both the internal and external GPU at once for ~24 GB of combined VRAM.
 
-This repo holds the diagnostic scripts and reference notes from getting that working on Windows 11. The narrative write-up lives on Medium (link TBC).
+This repo holds the diagnostic scripts and reference notes from getting that working on Windows 11. The narrative write-up lives on Medium (link TBC). **To build one yourself, follow [`docs/HOWTO.md`](docs/HOWTO.md).**
 
 ## The build
 
@@ -29,7 +29,7 @@ Check for it:
 .\diagnostics\Test-DriverConflict.ps1
 ```
 
-Fix: install one driver version covering both device IDs, using [`Install-NvidiaDriver.ps1`](diagnostics/Install-NvidiaDriver.ps1).
+Fix: install one driver version covering both device IDs. [`Update-NvidiaDriver.ps1`](diagnostics/Update-NvidiaDriver.ps1) downloads the version pinned in [`nvidia-driver.json`](diagnostics/nvidia-driver.json), checks NVIDIA's signature, picks the INF for each GPU and installs them via [`Install-NvidiaDriver.ps1`](diagnostics/Install-NvidiaDriver.ps1). Then stop it happening again with [`Disable-WindowsUpdateDrivers.ps1`](diagnostics/Disable-WindowsUpdateDrivers.ps1) `-Apply`: on this machine Windows Update installed the mismatched driver 16 minutes after the eGPU first appeared.
 
 ### 2. Hot-plugging an eGPU gives you Code 12
 
@@ -94,49 +94,54 @@ ollama-tools coder-model                 # which coder model fits the VRAM attac
 ollama-tools general-model               # which general-purpose model fits the VRAM attached right now
 ```
 
-`coder-model` picks from measured results, not advertised size: `qwen2.5-coder:32b`
-for both cards, `qwen2.5-coder:7b` for the internal 8 GB card alone,
-`qwen2.5-coder:1.5b` at 3 GB, `qwen2.5-coder:0.5b` otherwise (including no
-GPU detected at all). See [`ollama_tools/coder_model.py`](ollama_tools/coder_model.py)
+`coder-model` picks from measured results, not advertised size, by VRAM budget
+(each threshold is the free VRAM needed, set at or just above that model's measured
+total: `qwen3.8-216k` measured 19.29 GB = 17.97 GiB, hence 18 GiB):
+`qwen3.8-216k` at 18 GiB or more, `qwen3.8-100k` at 14 GiB, `qwen2.5-coder:14b`
+at 10 GiB, `qwen2.5-coder:7b` at 7 GiB (the internal 8 GB card alone),
+`qwen2.5-coder:1.5b` at 3 GiB, `qwen2.5-coder:0.5b` otherwise (including no
+GPU detected at all). On this 8 GB + 16 GB pair the default `conservative`
+budget (twice the smaller card, ~15 GiB) gives `qwen3.8-100k`; with
+`OLLAMA_SCHED_SPREAD=1` set on the server, `--strategy proportional` reflects
+where Ollama really puts the model and gives `qwen3.8-216k`. See [`ollama_tools/coder_model.py`](ollama_tools/coder_model.py)
 for the tier boundaries, and use `ollama_tools.coder_model.get_coder_model()`
 directly if another project wants this decision without shelling out.
 
-`general-model` is the same idea for chat/reasoning work: `qwen3.8-216k` for
-both cards, `qwen3.5:9b` for the internal 8 GB card alone, `gemma3:4b`
-otherwise (including no GPU detected at all). See
+`general-model` is the same idea for chat/reasoning work: `qwen3.8-216k` at
+18 GiB, `qwen3.8-100k` at 14 GiB, `qwen3.5:9b` at 7 GiB (the internal 8 GB card
+alone), `gemma3:4b` otherwise (including no GPU detected at all). See
 [`ollama_tools/general_model.py`](ollama_tools/general_model.py) for the tier
 boundaries, and use `ollama_tools.general_model.get_general_model()` directly
 if another project wants this decision without shelling out.
 
 Unlike every other subcommand, `coder-model` and `general-model` never refuse
 and always exit **0** — they always have a fallback answer, down to "no GPU
-at all", so the exit-code contract below does not apply to them.
+at all", so the exit-code contract below does not apply to them. They print
+only the model name on stdout (diagnostics go to stderr), so
+`$(ollama-tools coder-model)` works in a script.
 
 Exit codes are the contract for every other subcommand, so they can gate a script: **0** fine · **1** does not fit, nothing loaded · **2** the question could not be answered (no `nvidia-smi`, server down, model not pulled), also nothing loaded.
 
 ### Parallel chats
 
-Ollama gives every parallel slot (`OLLAMA_NUM_PARALLEL`) its own full `num_ctx`
-of KV cache, reserved at load. A percentage headroom cannot cover that, so ask
-about slots directly:
+`fit` adds the KV cache to the weights, and Ollama reserves a full `num_ctx`
+of it for every parallel slot. By default it reads `OLLAMA_NUM_PARALLEL`,
+`OLLAMA_KV_CACHE_TYPE` and `OLLAMA_CONTEXT_LENGTH` from the shell it runs in,
+which is only right if the Ollama server was started with the same values
+(often not the case on Windows; see
+[`docs/ollama-multi-gpu.md`](docs/ollama-multi-gpu.md)). To state the server's
+settings instead:
 
 ```bash
-ollama-tools fit qwen2.5-coder:14b --parallel 4 --kv-cache-type q4_0
-ollama-tools fit qwen2.5-coder:14b --parallel 4 --kv-cache-type q4_0 --num-ctx 16384  # before rebuilding a tag
-ollama-tools start qwen2.5-coder:14b --parallel 4 --kv-cache-type q4_0
+ollama-tools fit qwen3.8-100k --parallel 2 --kv-cache-type q4_0
+ollama-tools fit qwen3.8-100k --parallel 2 --kv-cache-type q4_0 --num-ctx 50000  # before rebuilding a tag
+ollama-tools start qwen3.8-100k --parallel 2 --kv-cache-type q4_0
 ```
 
-With `--parallel`, the check becomes `weights x (1 + headroom) + slots x KV cache`,
-and the KV cache is computed from the model's own layer shape. `--kv-cache-type`
-defaults to `f16`, the largest, because the tool cannot read the server's
-environment. Pass what the server was actually started with. `--num-ctx` is only
-on `fit`, because `start` and `bench` load at the manifest's context.
-
-Hybrid architectures such as `qwen35` (and so `qwen3.8-216k`) and compressed-KV
-ones such as `deepseek2` exit **2**. The layer-shape formula does not hold for
-them, so bisect them with
-[`diagnostics/measure-context-ceiling.sh`](diagnostics/measure-context-ceiling.sh)
-instead.
+`--parallel` and `--kv-cache-type` override the shell's environment variables.
+`--num-ctx` overrides the Modelfile's `num_ctx`, capped at the trained length,
+and is only on `fit`, because `start` and `bench` load at the Modelfile's
+context.
 
 There is deliberately no `--force`. If you believe a model fits because the runtime places layers proportionally, `--strategy proportional` says so in terms the check can act on. Otherwise the default assumes the even-split ceiling from point 3 above, so it will not claim 23.8 GB when your runtime can only reach 15.9 GB.
 
@@ -153,7 +158,16 @@ Generation is memory-bandwidth-bound, prompt eval is compute-bound, and offload 
 
 ## Was it worth it?
 
-Benchmarks pending. Honest answer so far: this is a hobbyist project. The hardware works, but getting there took considerably longer than the shopping did.
+For inference, yes. With both cards and the three Ollama settings in
+[`docs/ollama-multi-gpu.md`](docs/ollama-multi-gpu.md), a 27B model with a
+216,000-token context runs entirely on GPU at ~25.6 tok/s, and a 14B coder went
+from 14.2 to 37.9 tok/s just by spreading it across both cards. Full numbers:
+[`docs/ollama-multi-gpu.md`](docs/ollama-multi-gpu.md) and
+[`docs/model-picker.md`](docs/model-picker.md#models-tried-on-this-machine).
+
+It is still a hobbyist project: the hardware works, but getting there took
+considerably longer than the shopping did. To build one, follow
+[`docs/HOWTO.md`](docs/HOWTO.md).
 
 ## Licence
 

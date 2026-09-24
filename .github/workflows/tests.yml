@@ -1,0 +1,42 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    name: pytest (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both platforms the package claims to run on, at the oldest
+        # supported Python (requires-python >= 3.9) and a current one.
+        os: [ubuntu-latest, windows-latest]
+        python-version: ['3.9', '3.12']
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # The [dev] extra is pytest plus python-dotenv, which the envfile
+      # parity test needs; without it that test skips instead of running.
+      # Everything else mocks nvidia-smi and the Ollama server, so the
+      # runner needs no GPU and no running server.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+        shell: bash
+
+      - name: Run tests
+        run: python -m pytest -q
+        shell: bash

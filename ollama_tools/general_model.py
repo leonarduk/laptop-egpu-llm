@@ -3,10 +3,12 @@ VRAM attached right now.
 
 ``GENERAL_TIERS`` is a fixed table, not a live lookup: the boundaries were
 derived once from models actually measured on this machine (see
-docs/model-picker.md), not from advertised parameter counts.
-``qwen3.8-216k`` always reserves its full 216k KV cache and needs ~18-19 GB
-total, so it only belongs at the top tier -- a single eGPU is not enough to
-promote it. Re-measuring a model (a new build, a different quant) means
+docs/model-picker.md), not from advertised parameter counts, and are in
+GiB. ``qwen3.8-216k`` always reserves its full 216k KV cache and measured
+19.29 GB total at 100% GPU, so it only belongs at the top tier -- a single
+eGPU is not enough to promote it. ``qwen3.8-100k`` is the same weights with
+a 100k cache, ~15 GB total, which the conservative budget of an 8 + 16 GB
+pair does reach. Re-measuring a model (a new build, a different quant) means
 updating this table by hand; nothing here reads bench results at runtime.
 """
 
@@ -18,6 +20,7 @@ from .gpu import CONSERVATIVE, GIB, Gpu, GpuUnavailable, budget_bytes, query_gpu
 # budget clears wins.
 GENERAL_TIERS: tuple[tuple[int, str], ...] = (
     (18 * GIB, "qwen3.8-216k"),
+    (14 * GIB, "qwen3.8-100k"),
     (7 * GIB, "qwen3.5:9b"),
 )
 GENERAL_FALLBACK = "gemma3:4b"
