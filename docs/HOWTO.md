@@ -301,6 +301,33 @@ Expected on this build: `qwen3.8-216k` 100% GPU at ~25.6 tok/s; `qwen2.5-coder:1
   `Disable-WindowsUpdateDrivers.ps1` still reports driver updates off: a Windows feature
   update or an organisation policy can reset it.
 
+## When the eGPU disappears
+
+Run the health check first. It is read-only, needs no Administrator rights, and prints
+the fix for whatever it finds:
+
+```powershell
+.\diagnostics\Test-EgpuHealth.ps1
+```
+
+It checks, in the order a fault spreads: the enclosure's USB4 link, the enclosure's PCIe
+switch, both GPUs, their driver versions, `nvidia-smi`, the Windows Update driver block,
+and recent "GPU reset required" events. Work through its FAIL lines from the top: an
+earlier fault causes the later ones.
+
+The one that is easy to miss: **the enclosure's PCIe switch on Code 10.** Device Manager
+shows "PCI Express Upstream Switch Port" under System devices with *This device cannot
+start*, and the GPU behind it is simply absent, listed only as a disconnected record. The
+driver is fine; nothing reaches it. On this build it followed a GPU crash ("GPU reset
+required") while Ollama was being force-killed with a model loaded. **Restarting the
+laptop does not clear it, because the enclosure has its own power supply.** Power-cycle
+the enclosure: shut the laptop down, switch the enclosure off at the mains for 30 seconds,
+switch it back on, start the laptop with it attached, then Restart.
+
+**To avoid it:** unload models (`ollama stop <model>`, or Quit from the tray) before
+stopping Ollama, never end `ollama.exe` or `llama-server.exe` from Task Manager with a
+model loaded, and don't plug or unplug the enclosure while a model is loaded.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
@@ -309,6 +336,8 @@ Expected on this build: `qwen3.8-216k` 100% GPU at ~25.6 tok/s; `qwen2.5-coder:1
 | eGPU shows Code 12 | Plugged in after boot | Restart with it attached (step 4) |
 | Laptop card shows Code 28 after a driver install | NVIDIA "clean install" removed the driver and could not install the new one | Step 6 with `pnputil` |
 | Nothing at all happens when the enclosure is plugged in | Power, cable (USB 2.0-only) or port | Step 4 check |
+| eGPU missing; "PCI Express Upstream Switch Port" shows Code 10 | The enclosure's PCIe link did not start, often after a GPU crash | Power-cycle the enclosure, then Restart ([above](#when-the-egpu-disappears)) |
+| eGPU shows Code 43 | The GPU crashed or was reset and did not recover | Power-cycle the enclosure, then Restart |
 | Model loads but is slow; `ollama ps` shows CPU/GPU split | `OLLAMA_SCHED_SPREAD` not set in the running server, or the context is too large | Step 7 log check; smaller `num_ctx` (step 8) |
 | `ollama list` is missing your models after a restart | Server started with a different model store | Step 7 log check (`OLLAMA_MODELS`) |
 | VRAM in use but `ollama ps` shows nothing | Orphaned `llama-server.exe` | [`ollama-multi-gpu.md`](ollama-multi-gpu.md) section 4 |
