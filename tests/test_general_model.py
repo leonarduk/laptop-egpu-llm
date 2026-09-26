@@ -86,6 +86,8 @@ def test_get_general_model_queries_when_no_gpus_given(monkeypatch):
     import ollama_tools.general_model as general_model_mod
 
     monkeypatch.setattr(general_model_mod, "query_gpus", lambda: [INTERNAL_8GB])
+    monkeypatch.setattr(general_model_mod, "resident_vram_bytes", lambda: 0)
+    monkeypatch.setattr(general_model_mod, "installed_models", lambda: None)
     assert get_general_model() == "qwen3.5:9b"
 
 
