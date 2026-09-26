@@ -94,6 +94,8 @@ def test_get_coder_model_queries_when_no_gpus_given(monkeypatch):
     import ollama_tools.coder_model as coder_model_mod
 
     monkeypatch.setattr(coder_model_mod, "query_gpus", lambda: [INTERNAL_8GB])
+    monkeypatch.setattr(coder_model_mod, "resident_vram_bytes", lambda: 0)
+    monkeypatch.setattr(coder_model_mod, "installed_models", lambda: None)
     assert get_coder_model() == "qwen2.5-coder:7b"
 
 
@@ -105,3 +107,51 @@ def test_get_coder_model_falls_back_when_gpu_unavailable(monkeypatch):
 
     monkeypatch.setattr(coder_model_mod, "query_gpus", raise_unavailable)
     assert get_coder_model() == CODER_FALLBACK
+
+
+# The machine as it actually was when a pipeline run failed: qwen3.8-100k
+# resident (15249189105 bytes of VRAM per /api/ps), leaving 3144 + 5598 MiB
+# free. Free VRAM alone budgets 2 x 3144 MiB (~6.1 GiB) -> 1.5b.
+INTERNAL_BUSY = Gpu(0, "RTX 5070 Laptop", 8151 * MIB, 3144 * MIB)
+EGPU_BUSY = Gpu(1, "RTX 5060 Ti", 16311 * MIB, 5598 * MIB)
+QWEN_100K_RESIDENT = 15249189105
+
+
+def test_resident_ollama_model_counts_as_reclaimable():
+    """Ollama evicts a resident model to load the next one, so its VRAM is
+    part of the budget -- otherwise every call made while the previous
+    stage's model is loaded gets downgraded to a tiny coder."""
+    assert get_coder_model(CONSERVATIVE, [INTERNAL_BUSY, EGPU_BUSY]) == "qwen2.5-coder:1.5b"
+    assert (
+        get_coder_model(
+            CONSERVATIVE, [INTERNAL_BUSY, EGPU_BUSY], resident_bytes=QWEN_100K_RESIDENT
+        )
+        == "qwen3.8-100k"
+    )
+
+
+def test_uninstalled_tier_is_skipped():
+    installed = frozenset({"qwen2.5-coder:7b", "qwen3.8-216k:latest"})
+    # Budget clears 100k, which isn't pulled; 14b isn't either; 7b is.
+    assert (
+        get_coder_model(CONSERVATIVE, [INTERNAL_8GB, EGPU_16GB], installed=installed)
+        == "qwen2.5-coder:7b"
+    )
+
+
+def test_unknown_installed_set_skips_nothing():
+    assert (
+        get_coder_model(CONSERVATIVE, [INTERNAL_8GB, EGPU_16GB], installed=None)
+        == "qwen3.8-100k"
+    )
+
+
+def test_live_query_reads_resident_and_installed(monkeypatch):
+    import ollama_tools.coder_model as coder_model_mod
+
+    monkeypatch.setattr(coder_model_mod, "query_gpus", lambda: [INTERNAL_BUSY, EGPU_BUSY])
+    monkeypatch.setattr(coder_model_mod, "resident_vram_bytes", lambda: QWEN_100K_RESIDENT)
+    monkeypatch.setattr(
+        coder_model_mod, "installed_models", lambda: frozenset({"qwen3.8-100k:latest"})
+    )
+    assert get_coder_model() == "qwen3.8-100k"

@@ -15,6 +15,7 @@ updating this table by hand; nothing here reads bench results at runtime.
 from __future__ import annotations
 
 from .gpu import CONSERVATIVE, GIB, Gpu, GpuUnavailable, budget_bytes, query_gpus
+from .live import installed_models, pick_tier, reclaim_resident, resident_vram_bytes
 
 # (minimum budget in bytes, model), highest tier first. The first one the
 # budget clears wins.
@@ -34,7 +35,13 @@ def general_model_for_budget(budget: int) -> str:
     return GENERAL_FALLBACK
 
 
-def get_general_model(strategy: str = CONSERVATIVE, gpus: list[Gpu] | None = None) -> str:
+def get_general_model(
+    strategy: str = CONSERVATIVE,
+    gpus: list[Gpu] | None = None,
+    *,
+    resident_bytes: int = 0,
+    installed: frozenset[str] | None = None,
+) -> str:
     """Best general-purpose model for the VRAM attached right now.
 
     Unlike ``fit.judge``, this never refuses: no GPU detected (no
@@ -42,12 +49,22 @@ def get_general_model(strategy: str = CONSERVATIVE, gpus: list[Gpu] | None = Non
     model rather than raising. ``GpuUnavailable`` there means "do not load
     anything sized against an unknown budget"; picking a name worth trying
     is a lower-stakes question that still has a sane answer.
+
+    VRAM held by models Ollama already has resident counts as available
+    (``resident_bytes``): Ollama evicts them to load the pick, so treating
+    that memory as spoken for downgraded every call made while the previous
+    stage's model was still loaded. Tiers not in ``installed`` are skipped
+    (``None`` = unknown, skip nothing). With ``gpus`` omitted all three are
+    read live -- nvidia-smi, then Ollama's /api/ps and /api/tags.
     """
     if gpus is None:
         try:
             gpus = query_gpus()
         except GpuUnavailable:
             return GENERAL_FALLBACK
+        resident_bytes = resident_vram_bytes()
+        installed = installed_models()
     if not gpus:
         return GENERAL_FALLBACK
-    return general_model_for_budget(budget_bytes(gpus, strategy))
+    budget = budget_bytes(reclaim_resident(gpus, resident_bytes), strategy)
+    return pick_tier(GENERAL_TIERS, GENERAL_FALLBACK, budget, installed)
